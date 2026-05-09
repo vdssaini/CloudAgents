@@ -1,7 +1,7 @@
 """
 run_comparison.py
 -----------------
-Run a comprehensive side-by-side backtest of all five portfolios over a 20-year
+Run a comprehensive side-by-side backtest of all portfolios over a 20-year
 period on a 100-stock universe and print/save detailed results.
 
 Portfolios compared
@@ -9,8 +9,13 @@ Portfolios compared
 1. Strategy 1 — Adaptive Momentum + Trend Filter  (Jegadeesh & Titman 1993)
 2. Strategy 2 — RSI(2) + Bollinger Band Mean Reversion  (Connors & Alvarez 2009)
 3. Strategy 3 — Low Volatility Factor  (Baker, Bradley & Wurgler 2011)
-4. Master     — Regime-Aware blend (vol-targeted): BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev
-5. Benchmark  — Buy-and-hold SPY (frictionless)
+4. Strategy 4 — Dual Momentum + 52-Week High  (Antonacci 2014 + George & Hwang 2004)
+5. Master     — Regime-Aware blend (vol-targeted): BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev
+6. Benchmark  — Buy-and-hold SPY (frictionless)
+7. Avg Stock  — Equal-weight buy-and-hold of all 100 stocks in the universe
+
+Goal of Strategy 4: Beat buy-and-hold of individual stocks by capturing upside
+while avoiding major bear-market drawdowns via absolute (time-series) momentum.
 
 Usage
 -----
@@ -33,6 +38,7 @@ from src.simulate_data import simulate_prices, simulate_benchmark, SIMULATED_TIC
 from src.strategy import MomentumTrendStrategy, StrategyConfig
 from src.strategy_mean_reversion import MeanReversionStrategy, MeanReversionConfig, combine_strategies
 from src.strategy_low_vol import LowVolStrategy, LowVolConfig
+from src.strategy_dual_momentum import DualMomentumStrategy, DualMomentumConfig
 from src.regime_detector import RegimeDetector
 from src.portfolio_optimizer import vol_target_scale, regime_aware_combine
 from src.backtest_engine import run_backtest
@@ -97,22 +103,26 @@ def _plot_comparison(
     save_path: str,
 ) -> None:
     colors = {
-        "Strategy 1\n(Momentum)":       "#2196F3",
-        "Strategy 2\n(Mean Reversion)": "#4CAF50",
-        "Strategy 3\n(Low Vol)":        "#FF5722",
-        "Master\n(Regime+VolTarget)":   "#9C27B0",
-        "Benchmark\n(SPY)":             "#FF9800",
+        "Strategy 1\n(Momentum)":         "#2196F3",
+        "Strategy 2\n(Mean Reversion)":   "#4CAF50",
+        "Strategy 3\n(Low Vol)":          "#FF5722",
+        "Strategy 4\n(Dual Momentum)":    "#00BCD4",
+        "Master\n(Regime+VolTarget)":     "#9C27B0",
+        "Benchmark\n(SPY)":               "#FF9800",
+        "Avg Stock\n(Equal-weight B&H)":  "#9E9E9E",
     }
     linestyles = {
-        "Strategy 1\n(Momentum)":       "-",
-        "Strategy 2\n(Mean Reversion)": "-",
-        "Strategy 3\n(Low Vol)":        "-",
-        "Master\n(Regime+VolTarget)":   "-",
-        "Benchmark\n(SPY)":             "--",
+        "Strategy 1\n(Momentum)":         "-",
+        "Strategy 2\n(Mean Reversion)":   "-",
+        "Strategy 3\n(Low Vol)":          "-",
+        "Strategy 4\n(Dual Momentum)":    "-",
+        "Master\n(Regime+VolTarget)":     "-",
+        "Benchmark\n(SPY)":               "--",
+        "Avg Stock\n(Equal-weight B&H)":  ":",
     }
 
-    fig = plt.figure(figsize=(20, 18))
-    gs = fig.add_gridspec(3, 2, hspace=0.40, wspace=0.28)
+    fig = plt.figure(figsize=(22, 20))
+    gs = fig.add_gridspec(3, 2, hspace=0.42, wspace=0.28)
 
     ax_cum = fig.add_subplot(gs[0, :])
     ax_dd = fig.add_subplot(gs[1, 0])
@@ -120,7 +130,7 @@ def _plot_comparison(
     ax_roll = fig.add_subplot(gs[2, :])
 
     fig.suptitle(
-        "Strategy Comparison — 20-Year Backtest\n"
+        "Strategy Comparison — 20-Year Backtest (Goal: Beat Individual Stock Buy-and-Hold)\n"
         "100-Stock Universe | Regime-Switching Simulation | Fees & Slippage Included",
         fontsize=13, fontweight="bold",
     )
@@ -128,26 +138,30 @@ def _plot_comparison(
     # ---- 1. Cumulative performance (log scale) ----
     for label, pv in portfolio_values.items():
         pv_norm = pv / pv.iloc[0] * 100
+        lw = 2.5 if "Dual Momentum" in label or "Master" in label else (
+            1.5 if "Benchmark" not in label and "Equal" not in label else 1.2
+        )
         ax_cum.plot(
             pv_norm.index, pv_norm,
             label=label.replace("\n", " "),
-            color=colors[label],
-            linestyle=linestyles[label],
-            linewidth=2.0 if "Master" in label else (1.5 if label != "Benchmark\n(SPY)" else 1.2),
+            color=colors.get(label, "#888888"),
+            linestyle=linestyles.get(label, "-"),
+            linewidth=lw,
         )
     ax_cum.set_yscale("log")
     ax_cum.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}"))
     ax_cum.set_ylabel("Normalised Value (log, base=100)")
-    ax_cum.legend(loc="upper left", ncol=5, fontsize=8)
+    ax_cum.legend(loc="upper left", ncol=4, fontsize=8)
     ax_cum.grid(True, alpha=0.3)
-    ax_cum.set_title("Cumulative Performance (log scale)")
+    ax_cum.set_title("Cumulative Performance (log scale) — Strategy 4 goal: beat avg stock B&H")
 
     # ---- 2. Drawdown ----
     for label, pv in portfolio_values.items():
         peak = pv.cummax()
         dd = (pv - peak) / peak * 100
         ax_dd.plot(dd.index, dd, label=label.replace("\n", " "),
-                   color=colors[label], linestyle=linestyles[label], linewidth=1.2)
+                   color=colors.get(label, "#888888"),
+                   linestyle=linestyles.get(label, "-"), linewidth=1.2)
     ax_dd.axhline(0, color="black", linewidth=0.6)
     ax_dd.set_ylabel("Drawdown (%)")
     ax_dd.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
@@ -160,7 +174,7 @@ def _plot_comparison(
     col_labels = list(annual_table.columns)
     n_groups = len(years)
     n_bars = len(col_labels)
-    bar_width = 0.15
+    bar_width = max(0.10, 0.80 / n_bars)  # 0.80 = total group width; 0.10 = min readable bar
     x = np.arange(n_groups)
 
     bar_colors = [colors.get(c, "#888888") for c in col_labels]
@@ -185,11 +199,12 @@ def _plot_comparison(
         roll_sharpe = ret.rolling(252).mean() / ret.rolling(252).std() * np.sqrt(252)
         ax_roll.plot(roll_sharpe.index, roll_sharpe,
                      label=label.replace("\n", " "),
-                     color=colors[label], linestyle=linestyles[label], linewidth=1.2)
+                     color=colors.get(label, "#888888"),
+                     linestyle=linestyles.get(label, "-"), linewidth=1.2)
     ax_roll.axhline(0, color="black", linewidth=0.6)
     ax_roll.axhline(1, color="gray", linewidth=0.6, linestyle=":")
     ax_roll.set_ylabel("Rolling Sharpe (252-day)")
-    ax_roll.legend(fontsize=7, loc="upper right", ncol=5)
+    ax_roll.legend(fontsize=7, loc="upper right", ncol=4)
     ax_roll.grid(True, alpha=0.3)
     ax_roll.set_title("Rolling 1-Year Sharpe Ratio")
 
@@ -204,7 +219,7 @@ def _plot_comparison(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Side-by-side 20-year backtest: Momentum vs Mean Reversion vs Low Vol vs Master."
+        description="Side-by-side 20-year backtest: all strategies vs avg stock buy-and-hold."
     )
     p.add_argument("--start", default="2005-01-01",
                    help="Start date (YYYY-MM-DD). Default: 2005-01-01")
@@ -254,7 +269,15 @@ def main() -> None:
     lv_w = lv_strat.generate_weights(prices)
     logger.info("  Avg positions held: %.1f", (lv_w > 0).sum(axis=1).mean())
 
-    # 5. Master Portfolio: Regime-Aware + Volatility Targeting
+    # 5. Strategy 4: Dual Momentum + 52-Week High (designed to beat individual B&H)
+    logger.info("Running Strategy 4: Dual Momentum + 52-Week High …")
+    logger.info("  Goal: Beat buy-and-hold of individual stocks by avoiding bear markets")
+    dm_cfg = DualMomentumConfig(top_n=20)
+    dm_strat = DualMomentumStrategy(dm_cfg)
+    dm_w = dm_strat.generate_weights(prices)
+    logger.info("  Avg positions held: %.1f", (dm_w > 0).sum(axis=1).mean())
+
+    # 6. Master Portfolio: Regime-Aware + Volatility Targeting
     logger.info("Building Master Portfolio (regime-aware + vol-targeting) …")
     bench_series = benchmark.squeeze()
     detector = RegimeDetector()
@@ -268,29 +291,40 @@ def main() -> None:
     master_w = vol_target_scale(master_raw, prices, target_vol=0.12)
     logger.info("  Master portfolio avg gross exposure: %.1f%%", master_w.sum(axis=1).mean() * 100)
 
-    # 6. Benchmark buy-and-hold
+    # 7. Benchmarks: SPY buy-and-hold + avg stock equal-weight buy-and-hold
     bench_w = pd.DataFrame(1.0, index=benchmark.index, columns=benchmark.columns)
+    # Equal-weight buy-and-hold of all 100 stocks — the "average individual stock" benchmark
+    n_stocks = prices.shape[1]
+    avg_stock_w = pd.DataFrame(
+        1.0 / n_stocks, index=prices.index, columns=prices.columns
+    )
 
-    # 7. Run backtests
+    # 8. Run backtests
     logger.info("Running backtests with fees (0.10%% commission + 0.05%% slippage) …")
     fee, slip = 0.001, 0.0005
 
     r_mom = run_backtest(prices, mom_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
     r_mr = run_backtest(prices, mr_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
     r_lv = run_backtest(prices, lv_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
+    r_dm = run_backtest(prices, dm_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
     r_master = run_backtest(prices, master_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
     r_bm = run_backtest(benchmark, bench_w, initial_capital=args.capital, fee_rate=0.0)
+    # Average stock B&H: buy-and-hold all stocks equally — no fees (pure B&H benchmark)
+    r_avg = run_backtest(prices, avg_stock_w, initial_capital=args.capital, fee_rate=0.0)
 
     pv_mom = r_mom["portfolio_value"]
     pv_mr = r_mr["portfolio_value"]
     pv_lv = r_lv["portfolio_value"]
+    pv_dm = r_dm["portfolio_value"]
     pv_master = r_master["portfolio_value"]
     pv_bm = r_bm["portfolio_value"].reindex(pv_mom.index).ffill()
+    pv_avg = r_avg["portfolio_value"].reindex(pv_mom.index).ffill()
 
-    # 8. Print individual strategy metrics
+    # 9. Print individual strategy metrics
     m_mom = summarise(pv_mom, pv_bm)
     m_mr = summarise(pv_mr, pv_bm)
     m_lv = summarise(pv_lv, pv_bm)
+    m_dm = summarise(pv_dm, pv_bm)
     m_master = summarise(pv_master, pv_bm)
 
     print("\n" + "=" * 60)
@@ -312,52 +346,79 @@ def main() -> None:
     print_summary(m_lv)
 
     print("\n" + "=" * 60)
+    print("  STRATEGY 4: Dual Momentum + 52-Week High")
+    print("  GOAL: Beat buy-and-hold of individual stocks")
+    print("  (Antonacci 2014 dual momentum + George & Hwang 2004 52w high)")
+    print("=" * 60)
+    print_summary(m_dm)
+
+    print("\n" + "=" * 60)
     print("  MASTER PORTFOLIO: Regime-Aware + Volatility-Targeted")
     print("  (Dynamic allocation: BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev)")
     print("  (Moreira & Muir 2017 vol-targeting | Ang & Timmermann 2012 regime)")
     print("=" * 60)
     print_summary(m_master)
 
-    # 9. Year-by-year table
+    # 10. Year-by-year table
     pv_dict = {
-        "Strategy 1\n(Momentum)":       pv_mom,
-        "Strategy 2\n(Mean Reversion)": pv_mr,
-        "Strategy 3\n(Low Vol)":        pv_lv,
-        "Master\n(Regime+VolTarget)":   pv_master,
-        "Benchmark\n(SPY)":             pv_bm,
+        "Strategy 1\n(Momentum)":         pv_mom,
+        "Strategy 2\n(Mean Reversion)":   pv_mr,
+        "Strategy 3\n(Low Vol)":          pv_lv,
+        "Strategy 4\n(Dual Momentum)":    pv_dm,
+        "Master\n(Regime+VolTarget)":     pv_master,
+        "Benchmark\n(SPY)":               pv_bm,
+        "Avg Stock\n(Equal-weight B&H)":  pv_avg,
     }
     annual_tbl = _annual_returns_table(pv_dict)
     _print_annual_table(annual_tbl)
 
-    # 10. Summary comparison table
-    print("\n" + "=" * 80)
+    # 11. Summary comparison table (vs avg stock B&H for Strategy 4)
+    bm_avg_metrics = summarise(pv_avg)
+    print("\n" + "=" * 90)
     print("  SUMMARY COMPARISON TABLE")
-    print("=" * 80)
+    print("  Note: Strategy 4 is benchmarked vs Avg Stock (equal-weight B&H) — the harder target")
+    print("=" * 90)
     headers = ["Portfolio", "CAGR", "Sharpe", "Max DD", "Total Return", "Fees Paid"]
-    print(f"  {headers[0]:<32} {headers[1]:>8} {headers[2]:>8} {headers[3]:>10} {headers[4]:>13} {headers[5]:>12}")
-    print("-" * 80)
+    print(f"  {headers[0]:<36} {headers[1]:>8} {headers[2]:>8} {headers[3]:>10} {headers[4]:>13} {headers[5]:>12}")
+    print("-" * 90)
     rows = [
         ("Strategy 1 (Momentum)",              m_mom,    r_mom),
         ("Strategy 2 (Mean Reversion)",         m_mr,     r_mr),
         ("Strategy 3 (Low Volatility)",         m_lv,     r_lv),
+        ("Strategy 4 (Dual Momentum)",          m_dm,     r_dm),
         ("Master (Regime + Vol-Targeting)",     m_master, r_master),
     ]
     for name, metrics, result in rows:
         total_cost = result["total_fees"] + result["total_slippage"]
         print(
-            f"  {name:<32} {metrics['CAGR']:>+8.2%} {metrics['Sharpe Ratio']:>8.2f}"
+            f"  {name:<36} {metrics['CAGR']:>+8.2%} {metrics['Sharpe Ratio']:>8.2f}"
             f" {metrics['Max Drawdown']:>10.2%} {metrics['Total Return']:>+13.2%}"
             f" ${total_cost:>10,.0f}"
         )
     bm_metrics = summarise(pv_bm)
     print(
-        f"  {'Benchmark (SPY buy-and-hold)':<32} {bm_metrics['CAGR']:>+8.2%}"
+        f"  {'Benchmark (SPY buy-and-hold)':<36} {bm_metrics['CAGR']:>+8.2%}"
         f" {'N/A':>8} {bm_metrics['Max Drawdown']:>10.2%}"
         f" {bm_metrics['Total Return']:>+13.2%} {'$0':>12}"
     )
-    print("=" * 80 + "\n")
+    print(
+        f"  {'Avg Stock (100-stock equal-wt B&H)':<36} {bm_avg_metrics['CAGR']:>+8.2%}"
+        f" {'N/A':>8} {bm_avg_metrics['Max Drawdown']:>10.2%}"
+        f" {bm_avg_metrics['Total Return']:>+13.2%} {'$0':>12}"
+    )
+    print("=" * 90 + "\n")
 
-    # 11. Save files
+    # Strategy 4 vs avg stock comparison
+    dm_cagr = m_dm["CAGR"]
+    avg_cagr = bm_avg_metrics["CAGR"]
+    dm_dd = m_dm["Max Drawdown"]
+    avg_dd = bm_avg_metrics["Max Drawdown"]
+    beat_str = "BEATS" if dm_cagr > avg_cagr else "TRAILS"
+    print(f"  ▶ Strategy 4 {beat_str} avg stock B&H: {dm_cagr:+.1%} vs {avg_cagr:+.1%} CAGR")
+    print(f"  ▶ Strategy 4 drawdown: {dm_dd:.1%} vs avg stock: {avg_dd:.1%} (smaller = better)")
+    print()
+
+    # 12. Save files
     annual_tbl.to_csv(os.path.join(RESULTS_DIR, "annual_returns_comparison.csv"))
     logger.info("Annual returns saved → %s", os.path.join(RESULTS_DIR, "annual_returns_comparison.csv"))
 
@@ -366,8 +427,10 @@ def main() -> None:
             ("Strategy 1 (Momentum)", m_mom),
             ("Strategy 2 (Mean Reversion)", m_mr),
             ("Strategy 3 (Low Volatility)", m_lv),
+            ("Strategy 4 (Dual Momentum)", m_dm),
             ("Master (Regime + Vol-Targeting)", m_master),
-            ("Benchmark", summarise(pv_bm)),
+            ("Benchmark (SPY)", summarise(pv_bm)),
+            ("Avg Stock (Equal-weight B&H)", bm_avg_metrics),
         ]:
             f.write(f"\n=== {name} ===\n")
             for k, v in metrics.items():

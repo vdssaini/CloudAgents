@@ -179,3 +179,72 @@ def nday_return_zscore(
     nday_ret = np.log(prices / prices.shift(lookback))
     return cross_sectional_zscore(nday_ret)
 
+
+# ---------------------------------------------------------------------------
+# Additional indicators for Dual Momentum + Quality Strategy (Strategy 4)
+# ---------------------------------------------------------------------------
+
+def absolute_momentum(prices: pd.DataFrame, lookback: int = 252) -> pd.DataFrame:
+    """
+    Absolute (time-series) momentum over *lookback* trading days.
+
+    Returns the log-return of each stock over the lookback period.
+    Positive values indicate the stock beat cash (zero-return proxy).
+
+    Antonacci (2014) "Dual Momentum Investing" uses 12-month (252 trading day)
+    absolute momentum as a filter: only hold a stock if its absolute momentum
+    is positive, otherwise hold cash.  This is the mechanism that avoids bear
+    markets — both the 2008 crash and COVID crash had deeply negative 12-month
+    absolute momentum for most stocks before the worst losses occurred.
+
+    Academic basis: Antonacci, G. (2014) "Dual Momentum Investing"
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Adjusted close prices.
+    lookback : int
+        Look-back window in trading days. Default: 252 (~12 months).
+
+    Returns
+    -------
+    pd.DataFrame
+        Log-return over the lookback period (same shape as *prices*).
+    """
+    return np.log(prices / prices.shift(lookback))
+
+
+def high_52w_ratio(prices: pd.DataFrame, window: int = 252) -> pd.DataFrame:
+    """
+    Ratio of current price to the rolling *window*-day high.
+
+    George & Hwang (2004) "The 52-Week High and Momentum Investing" show that
+    stocks trading near their 52-week high outperform significantly over the
+    next 6–12 months.  The anchoring explanation: investors are reluctant to
+    push the stock past a psychological resistance level near the 52-week high,
+    creating a short-term underreaction that subsequently corrects.
+
+    * Ratio = 1.0 → price is exactly at the 52-week high
+    * Ratio = 0.75 → price is 25% below the 52-week high (less bullish)
+
+    Academic basis: George, T. & Hwang, C.Y. (2004) "The 52-Week High and
+    Momentum Investing", Journal of Finance.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Adjusted close prices.
+    window : int
+        Rolling window in trading days. Default: 252 (~52 weeks).
+
+    Returns
+    -------
+    pd.DataFrame
+        Price / rolling_high ratio in [0, 1].
+    """
+    # Require at least 1 quarter (63 trading days) of data before producing a
+    # signal — this prevents noisy ratios based on only a few bars while still
+    # allowing earlier signals than waiting for the full 252-day window.
+    _MIN_PERIODS = max(63, window // 4)
+    rolling_high = prices.rolling(window, min_periods=_MIN_PERIODS).max()
+    return (prices / rolling_high).clip(upper=1.0)

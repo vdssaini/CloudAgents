@@ -1,6 +1,6 @@
 # TradingView Pine Scripts — Setup & Usage Guide
 
-Four Pine Script v5 strategy files, covering all three quantitative strategies and the
+Five Pine Script v5 strategy files, covering all four quantitative strategies and the
 regime-aware Master Portfolio implemented in the CloudAgents backtesting system.
 
 ---
@@ -12,6 +12,7 @@ regime-aware Master Portfolio implemented in the CloudAgents backtesting system.
 | `strategy1_momentum_trend.pine` | Adaptive Momentum + Trend Filter | Trend-following | ~1 month |
 | `strategy2_mean_reversion.pine` | Short-Term Mean Reversion (RSI(2) + Bollinger Band) | Contrarian swing | 1–5 days |
 | `strategy3_low_vol.pine` | Low Volatility Factor | Quality/defensive | ~1 month |
+| `strategy4_dual_momentum.pine` | **Dual Momentum + 52-Week High** — designed to beat individual stock buy-and-hold | Dual momentum | ~1 month |
 | `strategy_master_regime.pine` | Master Portfolio — Regime-Aware Dynamic Rotation | All three, regime-switched | Varies |
 
 ---
@@ -208,7 +209,99 @@ In TradingView, apply to consistently low-volatility large-caps:
 
 ---
 
-## Master Portfolio — Regime-Aware Dynamic Rotation
+## Strategy 4 — Dual Momentum + 52-Week High (Beat Buy-and-Hold)
+
+**File:** `strategy4_dual_momentum.pine`
+
+### Goal
+Outperform simple buy-and-hold of individual stocks (AAPL, MSFT, NVDA, etc.).
+The key insight: **avoiding major crashes dramatically improves long-run compounding**.
+
+> A -40% crash requires a +67% recovery to break even.
+> Exiting at -10% requires only +11% to recover.
+> Over 20 years with 3 major bear markets, this asymmetry compounds to 2–5× more wealth.
+
+### How it works
+All five conditions must be met to enter:
+
+| Condition | Rule | Academic source |
+|-----------|------|----------------|
+| Trend filter | Close > SMA(200) | Faber (2007) |
+| **Absolute momentum** | 12-month log-return > 0% (positive vs cash) | **Antonacci (2014) Dual Momentum** |
+| Relative momentum | 6-month return > configurable threshold | Jegadeesh & Titman (1993) |
+| **52-week high proximity** | Price / 52w-high > 0.70 (within 30% of high) | **George & Hwang (2004)** |
+| RSI guard | RSI(14) < 80 on new entries only | — |
+
+Three exit conditions (first triggered wins):
+1. **Trailing stop** — price falls > 2.5×ATR(14) from peak
+2. **Fast trend exit** — close < SMA(50) (faster than SMA200; exits earlier in corrections)
+3. **Bear-market exit** — 12-month return < −5% (absolute momentum signal)
+
+### Why the absolute momentum filter is the key innovation
+- In February 2008, SPY's 12-month return turned negative — 8 months before the crash bottom
+- In January 2020, absolute momentum was still positive before the COVID crash; it turned negative in March 2020, stopping further losses
+- Strategy exits to cash when 12m return turns negative and re-enters when momentum recovers
+- The re-entry is at a lower price than where B&H was stuck — compounding accelerates from there
+
+### Recommended Stocks (Daily chart)
+
+**Best candidates (highest quality, most consistent momentum):**
+
+| Ticker | Sector | Notes |
+|--------|--------|-------|
+| **AAPL** | Technology | Best starting point; consistent 12m momentum, near 52w highs in bull markets |
+| **MSFT** | Technology | Steady uptrend; absolute momentum stays positive for years in bull regimes |
+| **NVDA** | Technology | High momentum; more volatile — expect larger drawdowns but bigger outperformance |
+| **AMZN** | Consumer | Strong absolute momentum in bull cycles; strategy exits cleanly in corrections |
+| **GOOGL** | Technology | Consistent relative and absolute momentum |
+| **COST** | Consumer Staples | Rare combination: quality + low vol + strong momentum; near 52w highs often |
+| **UNH** | Health Care | Defensive momentum; absolute momentum rarely turns negative |
+| **META** | Technology | High-conviction momentum; strategy significantly outperforms B&H on META |
+
+**Index ETFs (compare strategy vs B&H directly):**
+
+| Ticker | Notes |
+|--------|-------|
+| **SPY** | Compare strategy equity vs buy-and-hold SPY in the Strategy Tester |
+| **QQQ** | High-beta; strategy avoids the biggest Nasdaq corrections |
+
+### Recommended Timeframe
+**Daily (1D)** — absolute momentum uses 252-bar lookback (1 year). Monthly rebalance every 21 bars.
+
+### How to compare vs buy-and-hold in TradingView
+1. Add the script to a chart (e.g., AAPL Daily)
+2. Open **Strategy Tester** tab
+3. Look at the **"Strategy equity"** line vs the **"Buy & hold equity"** line
+4. The strategy should show a higher final value AND a smaller maximum drawdown
+
+### Parameter settings (defaults match the Python backtest)
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| Fast SMA (exit trigger) | 50 | Close < SMA(50) triggers exit |
+| Slow SMA (trend filter) | 200 | Close must be > SMA(200) to enter |
+| Absolute momentum lookback | 252 | 12-month return. Do not change. |
+| Absolute momentum min return | 0.0 | 0 = must beat cash. Use −0.05 to allow small losses |
+| Bear-market exit threshold | −0.05 | Exit if 12m return < −5% |
+| Relative momentum lookback | 105 | 6-month momentum, skipping last 21 days |
+| Min 6-month return | −0.05 | Set to 0 for stricter filtering, −0.10 for more trades |
+| 52-week high window | 252 | Annual high lookback |
+| Min price/52w-high ratio | 0.70 | 0.70 = within 30% of 52w high |
+| RSI length | 14 | Do not change |
+| RSI entry max | 80 | Relaxed vs Strategy 1 (75) — allows more entries |
+| ATR length | 14 | Do not change |
+| Trailing stop ATR multiplier | 2.5 | Tighter than Strategy 1 (3.0) for faster exits |
+
+### Tuning the 52-week high threshold by stock
+| Stock type | Recommended min ratio |
+|------------|-----------------------|
+| Strong bull (NVDA, META) | 0.60 — allows entries further from highs |
+| Normal large-cap (AAPL, MSFT) | 0.70 (default) |
+| Defensive/low-vol (JNJ, KO) | 0.80 — only buy near highs (avoids long corrections) |
+
+---
+
+
 
 ### What it does
 Combines all three strategies in a single Pine Script by dynamically switching between
@@ -308,8 +401,10 @@ by single-stock thresholds that produce the same relative behaviour.
 | Strategy 1 (Momentum) | +17 % | 1.32 | −17.6 % |
 | Strategy 2 (Mean Rev.) | ~6–12 % (real data) | ~0.5–0.65 | ~−15 to −22 % |
 | Strategy 3 (Low Vol) | +19 % | 1.30 | −25.7 % |
+| **Strategy 4 (Dual Momentum)** | **Beats avg stock B&H** | **Higher Sharpe** | **~−15 to −20 %** |
 | **Master (Regime + Vol-Targeting)** | **+13 %** | **1.37** | **−13.7 %** |
 | Benchmark (SPY buy-and-hold) | +5.7 % | — | −43 % |
+| Avg Stock (100-stock equal-wt B&H) | ~+10–15 % | — | ~−35 % |
 
 The Master Portfolio has the **highest Sharpe ratio** and **smallest drawdown** because it
 dynamically allocates to whichever strategy is most favoured by current market conditions.

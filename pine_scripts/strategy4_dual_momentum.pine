@@ -1,0 +1,132 @@
+// Strategy 4 — Dual Momentum + 52-Week High (Beat Buy-and-Hold)
+// ================================================================
+// TradingView Pine Script v5
+//
+// Goal: Beat buy-and-hold of individual stocks (AAPL, MSFT, NVDA, etc.)
+// by capturing momentum upside while exiting during bear markets.
+//
+// Signal stack (ALL must be true to enter):
+// 1. Trend filter   : Close > SMA(200)       [Faber 2007]
+// 2. Absolute mom   : 12-month return > 0%   [Antonacci 2014 Dual Momentum]
+// 3. Relative mom   : 6-month return > min threshold (approx cross-sectional)
+// 4. 52-week high   : Price / 52w-high > threshold  [George & Hwang 2004]
+// 5. RSI guard      : RSI(14) < 80 on new entries only
+//
+// Exit conditions (first wins):
+// A. Trailing stop  : Price falls > N × ATR(14) from peak
+// B. Fast trend exit: Close < SMA(50)          [earlier exit than SMA200]
+// C. Absolute mom   : 12-month return < -5%    [bear market exit signal]
+//
+// Academic basis:
+// * Antonacci (2014) "Dual Momentum Investing"
+// * George & Hwang (2004) "The 52-Week High and Momentum Investing"
+// * Jegadeesh & Titman (1993) "Returns to Buying Winners and Selling Losers"
+// * Faber (2007) "A Quantitative Approach to Tactical Asset Allocation"
+//
+// Why it beats buy-and-hold:
+// * A -40% crash requires +67% to recover. Exiting at -10% only needs +11%.
+// * Avoiding the 2008 (-50%) and COVID (-35%) crashes dramatically compounds.
+// * Re-entry after recovery captures the rebound — not starting from a lower base.
+//
+// Recommended stocks (Daily chart):
+//   High-quality large caps: AAPL, MSFT, NVDA, AMZN, GOOGL, META, UNH, COST
+//   Avoid: penny stocks, meme stocks, high-vol biotech (absolute mom too noisy)
+//
+// Setup instructions:
+//   1. Open TradingView → New Script → Paste entire file → Add to chart
+//   2. Use on Daily (1D) timeframe — monthly rebalance triggers every 21 bars
+//   3. Strategy Tester tab shows performance vs buy-and-hold automatically
+//   4. Compare "Strategy equity" vs "Buy & hold equity" in Tester
+//
+// ================================================================
+//@version=5
+strategy(title="Strategy 4 — Dual Momentum + 52W High (Beat B&H)", shorttitle="DualMom+52W", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=95, commission_type=strategy.commission.percent, commission_value=0.1, slippage=2, calc_on_every_tick=false)
+
+// ── Inputs ────────────────────────────────────────────────────────────────
+sma_fast_len = input.int(50, title="Fast SMA (exit trigger)", minval=10, maxval=100, group="Trend Filters")
+sma_slow_len = input.int(200, title="Slow SMA (trend filter)", minval=50, maxval=500, group="Trend Filters")
+abs_mom_len = input.int(252, title="Absolute momentum lookback (bars)", minval=60, maxval=504, group="Dual Momentum")
+abs_mom_threshold = input.float(0.0, title="Absolute momentum min return (0=beat cash)", minval=-0.20, maxval=0.20, step=0.01, group="Dual Momentum")
+abs_mom_bear_exit = input.float(-0.05, title="Absolute momentum bear-market exit threshold", minval=-0.30, maxval=0.0, step=0.01, group="Dual Momentum")
+rel_mom_len = input.int(105, title="Relative momentum lookback (bars, skip last 21)", minval=42, maxval=252, group="Dual Momentum")
+rel_mom_min = input.float(-0.05, title="Min 6-month return to qualify (relative filter)", minval=-0.30, maxval=0.30, step=0.01, group="Dual Momentum")
+high_52w_len = input.int(252, title="52-week high window (bars)", minval=63, maxval=504, group="52-Week High Filter")
+high_52w_threshold = input.float(0.70, title="Min price/52w-high ratio (0.70 = within 30% of high)", minval=0.40, maxval=1.00, step=0.05, group="52-Week High Filter")
+rsi_len = input.int(14, title="RSI length", minval=2, maxval=30, group="RSI Guard")
+rsi_max = input.float(80.0, title="RSI entry max (don't buy if overbought)", minval=50.0, maxval=95.0, step=1.0, group="RSI Guard")
+atr_len = input.int(14, title="ATR length", minval=5, maxval=30, group="Risk Management")
+trail_mult = input.float(2.5, title="Trailing stop ATR multiplier", minval=1.0, maxval=6.0, step=0.25, group="Risk Management")
+rebalance_bars = input.int(21, title="Rebalance period (bars, 21=monthly)", minval=5, maxval=63, group="Risk Management")
+show_signals = input.bool(true, title="Show entry/exit signals on chart", group="Display")
+show_smas = input.bool(true, title="Show SMA(50) and SMA(200) lines", group="Display")
+
+// ── Indicators ────────────────────────────────────────────────────────────
+sma_fast = ta.sma(close, sma_fast_len)
+sma_slow = ta.sma(close, sma_slow_len)
+abs_mom = math.log(close / close[abs_mom_len])
+rel_mom = math.log(close[21] / close[rel_mom_len + 21])
+high_52w = ta.highest(high, high_52w_len)
+ratio_52w = close / high_52w
+rsi_val = ta.rsi(close, rsi_len)
+atr_val = ta.atr(atr_len)
+
+// ── Signals ───────────────────────────────────────────────────────────────
+trend_ok = close > sma_slow
+abs_mom_ok = abs_mom >= abs_mom_threshold
+rel_mom_ok = rel_mom >= rel_mom_min
+near_52w_high = ratio_52w >= high_52w_threshold
+rsi_ok = rsi_val < rsi_max or strategy.position_size > 0
+entry_signal = trend_ok and abs_mom_ok and rel_mom_ok and near_52w_high and rsi_ok
+
+// Exit conditions
+fast_trend_exit = close < sma_fast
+bear_market_exit = abs_mom < abs_mom_bear_exit
+exit_signal = fast_trend_exit or bear_market_exit
+
+// ── Trailing Stop ─────────────────────────────────────────────────────────
+var float peak_price = na
+var float stop_level = na
+if strategy.position_size > 0
+    peak_price := math.max(nz(peak_price, close), close)
+    stop_level := peak_price - trail_mult * atr_val
+else
+    peak_price := na
+    stop_level := na
+trail_stop_hit = strategy.position_size > 0 and not na(stop_level) and close < stop_level
+
+// ── Strategy Logic ────────────────────────────────────────────────────────
+// Monthly rebalance: only evaluate entry/exit every rebalance_bars
+is_rebalance_bar = bar_index % rebalance_bars == 0
+if is_rebalance_bar or trail_stop_hit or exit_signal
+    if strategy.position_size == 0 and entry_signal and not exit_signal
+        strategy.entry("Long", strategy.long)
+    if strategy.position_size > 0 and (exit_signal or trail_stop_hit)
+        strategy.close("Long", comment=trail_stop_hit ? "Trail Stop" : (fast_trend_exit ? "SMA50 Exit" : "Bear Market"))
+
+// ── Plot ──────────────────────────────────────────────────────────────────
+plot(show_smas ? sma_fast : na, color=color.orange, linewidth=1, title="SMA(50)")
+plot(show_smas ? sma_slow : na, color=color.blue, linewidth=2, title="SMA(200)")
+plot(strategy.position_size > 0 and not na(stop_level) ? stop_level : na, color=color.red, linewidth=1, style=plot.style_linebr, title="Trailing Stop")
+
+// Entry / Exit markers
+plotshape(show_signals and entry_signal and strategy.position_size[1] == 0 ? low : na, style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, title="Entry")
+plotshape(show_signals and (exit_signal or trail_stop_hit) and strategy.position_size[1] > 0 ? high : na, style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small, title="Exit")
+
+// Signal state label (top-right)
+signal_state = entry_signal ? "✅ ENTRY READY" : (abs_mom < 0 ? "⛔ BEAR MARKET" : (not trend_ok ? "⛔ BELOW SMA200" : (not near_52w_high ? "⚠ FAR FROM 52W HIGH" : "⚠ WAIT")))
+var table info = table.new(position.top_right, 2, 7, bgcolor=color.new(color.white, 10), border_width=1)
+if barstate.islast
+    table.cell(info, 0, 0, "Dual Momentum Signal", text_color=color.black, text_size=size.small, bgcolor=color.new(color.gray, 80))
+    table.cell(info, 1, 0, signal_state, text_color=entry_signal ? color.green : color.red, text_size=size.small, bgcolor=color.new(color.gray, 80))
+    table.cell(info, 0, 1, "Trend (>SMA200)", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 1, trend_ok ? "✅" : "❌", text_color=trend_ok ? color.green : color.red, text_size=size.tiny)
+    table.cell(info, 0, 2, "Absolute Mom (12m)", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 2, abs_mom_ok ? str.format("✅ {0,number,#.1%}", abs_mom) : str.format("❌ {0,number,#.1%}", abs_mom), text_color=abs_mom_ok ? color.green : color.red, text_size=size.tiny)
+    table.cell(info, 0, 3, "Relative Mom (6m)", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 3, rel_mom_ok ? str.format("✅ {0,number,#.1%}", rel_mom) : str.format("❌ {0,number,#.1%}", rel_mom), text_color=rel_mom_ok ? color.green : color.red, text_size=size.tiny)
+    table.cell(info, 0, 4, "52W High Ratio", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 4, near_52w_high ? str.format("✅ {0,number,#.2f}", ratio_52w) : str.format("❌ {0,number,#.2f}", ratio_52w), text_color=near_52w_high ? color.green : color.red, text_size=size.tiny)
+    table.cell(info, 0, 5, "RSI(14)", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 5, str.format("{0,number,#.1f}", rsi_val), text_color=rsi_val < rsi_max ? color.green : color.orange, text_size=size.tiny)
+    table.cell(info, 0, 6, "Fast SMA Exit", text_color=color.black, text_size=size.tiny)
+    table.cell(info, 1, 6, fast_trend_exit ? "⚠ EXIT TRIGGERED" : "OK", text_color=fast_trend_exit ? color.red : color.green, text_size=size.tiny)

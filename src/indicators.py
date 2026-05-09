@@ -63,14 +63,13 @@ def atr(prices: pd.DataFrame, window: int = 14) -> pd.DataFrame:
 
 def momentum(prices: pd.DataFrame, lookback: int = 126) -> pd.DataFrame:
     """
-    Price momentum: total return over *lookback* trading days,
+    Price momentum: total log-return over *lookback* trading days,
     skipping the most recent month (21 days) to avoid short-term reversal.
-    Uses log-returns for numerical stability.
+
+    Computed as log(P[t-21] / P[t-lookback-21]), which is the log-return
+    from (lookback+21) days ago to 21 days ago.
     """
-    log_ret = np.log(prices / prices.shift(lookback + 21)) - np.log(
-        prices / prices.shift(21)
-    )
-    return log_ret
+    return np.log(prices.shift(21) / prices.shift(lookback + 21))
 
 
 def cross_sectional_zscore(df: pd.DataFrame) -> pd.DataFrame:

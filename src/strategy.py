@@ -76,6 +76,7 @@ class StrategyConfig:
     rebalance_days: int = 21             # ~monthly
 
     # Risk management
+    trailing_stop_enabled: bool = True    # set False to disable trailing stops (e.g., in tests)
     trailing_stop_atr_mult: float = 3.0  # exit if price drops > N × ATR from peak
     atr_window: int = 14
 
@@ -112,10 +113,6 @@ class MomentumTrendStrategy:
         # --- Pre-compute indicators ---
         ma200 = sma(prices, cfg.trend_sma_window)
         mom_score = momentum(prices, cfg.momentum_lookback)
-        mom_zscore = mom_score.apply(cross_sectional_zscore.func
-                                     if hasattr(cross_sectional_zscore, "func")
-                                     else lambda row: row, axis=1)
-        # cross_sectional_zscore works row-wise; apply on transposed then T back
         mom_zscore = cross_sectional_zscore(mom_score)
         rsi_vals = rsi(prices, cfg.rsi_window)
         daily_vol = np.log(prices / prices.shift(1)).rolling(
@@ -125,7 +122,6 @@ class MomentumTrendStrategy:
 
         # Trailing-stop: track per-stock peak price since entry
         peak_price = prices.copy() * np.nan
-        in_position = pd.DataFrame(False, index=prices.index, columns=prices.columns)
 
         weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
         current_weights = pd.Series(0.0, index=prices.columns)
@@ -146,23 +142,22 @@ class MomentumTrendStrategy:
 
             # ---- Update trailing stops ----
             # Any stock in-position: update peak; check if stop hit
-            for ticker in prices.columns:
-                if in_position.at[date, ticker] if i == 0 else (
-                    current_weights[ticker] > 0
-                ):
-                    prev_peak = peak_price.iat[i - 1, prices.columns.get_loc(ticker)] \
-                        if i > 0 else row_prices[ticker]
-                    current_peak = max(
-                        prev_peak if not np.isnan(prev_peak) else row_prices[ticker],
-                        row_prices[ticker],
-                    )
-                    peak_price.iat[i, prices.columns.get_loc(ticker)] = current_peak
+            if cfg.trailing_stop_enabled:
+                for ticker in prices.columns:
+                    if current_weights[ticker] > 0:
+                        prev_peak = peak_price.iat[i - 1, prices.columns.get_loc(ticker)] \
+                            if i > 0 else row_prices[ticker]
+                        current_peak = max(
+                            prev_peak if not np.isnan(prev_peak) else row_prices[ticker],
+                            row_prices[ticker],
+                        )
+                        peak_price.iat[i, prices.columns.get_loc(ticker)] = current_peak
 
-                    stop_level = current_peak - cfg.trailing_stop_atr_mult * (
-                        row_atr[ticker] if not np.isnan(row_atr[ticker]) else 0
-                    )
-                    if row_prices[ticker] < stop_level:
-                        current_weights[ticker] = 0.0
+                        stop_level = current_peak - cfg.trailing_stop_atr_mult * (
+                            row_atr[ticker] if not np.isnan(row_atr[ticker]) else 0
+                        )
+                        if row_prices[ticker] < stop_level:
+                            current_weights[ticker] = 0.0
 
             # ---- Monthly rebalance ----
             if rebalance_counter % cfg.rebalance_days == 0 or i == cfg.trend_sma_window:

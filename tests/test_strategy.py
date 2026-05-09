@@ -157,7 +157,7 @@ class TestConfigHonoured:
         prices = make_prices(n_days=400, n_stocks=8)
         rebalance_days = 42
         cfg = StrategyConfig(rebalance_days=rebalance_days, min_positions=1, top_n=5,
-                             trailing_stop_atr_mult=100.0)  # disable trailing stops
+                             trailing_stop_enabled=False)  # disable stops to isolate rebalance logic
         weights = MomentumTrendStrategy(cfg).generate_weights(prices)
         post_warmup = weights.iloc[cfg.trend_sma_window:]
         changed = (post_warmup.diff().abs().sum(axis=1) > 1e-9)

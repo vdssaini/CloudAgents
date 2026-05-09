@@ -61,8 +61,7 @@ def _load_real_data(tickers: list[str], start: str, end: str | None):
         prices = fetch_prices(tickers, start=start, end=end)
         if prices.empty:
             return None, None
-        from src.data_fetcher import fetch_prices as _fp
-        benchmark = _fp(["SPY"], start=start, end=end)
+        benchmark = fetch_prices(["SPY"], start=start, end=end)
         if benchmark.empty:
             return None, None
         return prices, benchmark

@@ -95,7 +95,6 @@ def run_backtest(
             day_ret = stock_returns.iloc[t].values
             drifted = current_weights * (1 + day_ret)
             drifted_total = drifted.sum()
-            drifted_cash = (1 - current_weights.sum()) * (1 + rf_daily)
             pv_after_drift = pv * (
                 drifted_total + (1 - current_weights.sum()) * (1 + rf_daily)
             )

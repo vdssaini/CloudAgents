@@ -272,7 +272,7 @@ def main() -> None:
     # 5. Strategy 4: Dual Momentum + 52-Week High (designed to beat individual B&H)
     logger.info("Running Strategy 4: Dual Momentum + 52-Week High …")
     logger.info("  Goal: Beat buy-and-hold of individual stocks by avoiding bear markets")
-    dm_cfg = DualMomentumConfig(top_n=20)
+    dm_cfg = DualMomentumConfig()
     dm_strat = DualMomentumStrategy(dm_cfg)
     dm_w = dm_strat.generate_weights(prices)
     logger.info("  Avg positions held: %.1f", (dm_w > 0).sum(axis=1).mean())

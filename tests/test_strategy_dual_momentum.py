@@ -185,22 +185,22 @@ class TestConfig:
         cfg = DualMomentumConfig()
         assert cfg.trend_sma_window == 200
         assert cfg.abs_mom_lookback == 252
-        assert cfg.high_52w_min_ratio == 0.70
-        assert cfg.top_n == 20
-        assert cfg.min_positions == 5
-        assert cfg.max_weight == 0.12
+        assert cfg.high_52w_min_ratio == 0.50
+        assert cfg.top_n == 10
+        assert cfg.min_positions == 2
+        assert cfg.max_weight == 0.20
 
     def test_custom_config_accepted(self):
-        cfg = DualMomentumConfig(top_n=10, max_weight=0.15, abs_mom_threshold=0.05)
+        cfg = DualMomentumConfig(top_n=5, max_weight=0.15, abs_mom_threshold=0.05)
         strat = DualMomentumStrategy(cfg)
-        assert strat.config.top_n == 10
+        assert strat.config.top_n == 5
         assert strat.config.max_weight == 0.15
         assert strat.config.abs_mom_threshold == 0.05
 
     def test_default_config_used_when_none(self):
         strat = DualMomentumStrategy()
         assert strat.config is not None
-        assert strat.config.top_n == 20
+        assert strat.config.top_n == 10
 
 
 # ---------------------------------------------------------------------------

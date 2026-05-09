@@ -81,20 +81,19 @@ logger = logging.getLogger(__name__)
 class DualMomentumConfig:
     # Trend filters
     trend_sma_window: int = 200          # primary trend: close > SMA(200)
-    fast_sma_window: int = 50            # secondary / faster exit: close < SMA(50)
+    fast_sma_window: int = 50            # kept for backward compatibility (not used in exits)
 
     # Absolute momentum (Antonacci 2014)
     abs_mom_lookback: int = 252          # 12-month absolute momentum lookback
-    abs_mom_threshold: float = 0.0       # min log-return to pass (0 = beat cash)
-    abs_mom_exit_buffer: float = 0.05    # intra-rebalance bear-exit if abs_mom < threshold - buffer
+    abs_mom_threshold: float = -0.05     # mild negative ok — only exit deep bear markets
 
     # Relative momentum (Jegadeesh & Titman 1993)
     rel_mom_lookback: int = 126          # 6-month relative momentum lookback
-    top_n: int = 20                      # max stocks held at once
+    top_n: int = 10                      # concentrated in top 10 for stronger momentum factor
 
     # 52-week high proximity (George & Hwang 2004)
     high_52w_window: int = 252           # rolling window for 52-week high
-    high_52w_min_ratio: float = 0.70     # price must be >= 70% of 52w high
+    high_52w_min_ratio: float = 0.50     # price within 50% of 52w high — relaxed filter
 
     # RSI guard on new entries
     rsi_window: int = 14
@@ -102,8 +101,8 @@ class DualMomentumConfig:
 
     # Volatility / sizing
     vol_window: int = 21
-    max_weight: float = 0.12            # slightly higher cap (more conviction)
-    min_positions: int = 5
+    max_weight: float = 0.20            # higher cap — with top-10, allows full investment
+    min_positions: int = 2              # stay invested even with 2 qualifying stocks
 
     # Hybrid weighting: mix of inv-vol and momentum signal strength
     # weight_i ∝ (1/vol_i) × (mom_z + mom_weight_boost)
@@ -114,7 +113,7 @@ class DualMomentumConfig:
 
     # Risk management
     trailing_stop_enabled: bool = True
-    trailing_stop_atr_mult: float = 2.5  # tighter than Strategy 1 (3.0)
+    trailing_stop_atr_mult: float = 3.0  # wider stop — avoids shakeouts in bull markets
     atr_window: int = 14
 
 
@@ -202,16 +201,10 @@ class DualMomentumStrategy:
                         if row_prices[ticker] < stop_level:
                             current_weights[ticker] = 0.0
 
-            # ---- Faster SMA(50) trend exits (every bar, intra-rebalance) ----
-            # If a held stock falls below SMA(50), exit without waiting for rebalance
-            for ticker in prices.columns:
-                if current_weights[ticker] > 0:
-                    p = row_prices[ticker]
-                    m50 = row_ma50[ticker]
-                    abs_m = row_abs_mom[ticker]
-                    if (not np.isnan(p) and not np.isnan(m50) and p < m50) or \
-                       (not np.isnan(abs_m) and abs_m < cfg.abs_mom_threshold - cfg.abs_mom_exit_buffer):
-                        current_weights[ticker] = 0.0
+            # NOTE: Intra-bar SMA(50) and abs_mom exits have been removed.
+            # The SMA(200) and abs_mom filters are applied at each monthly rebalance,
+            # which correctly avoids premature exits during normal bull-market pullbacks.
+            # Intra-bar risk management is handled by the trailing stop above.
 
             # ---- Monthly rebalance ----
             if rebalance_counter % cfg.rebalance_days == 0 or i == min_history:

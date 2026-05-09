@@ -1,0 +1,245 @@
+// ============================================================================
+// Strategy 2 — Short-Term Mean Reversion (RSI(2) + Bollinger Band)
+// ============================================================================
+// Pine Script v5  |  TradingView Strategy
+//
+// Exact port of src/strategy_mean_reversion.py (MeanReversionStrategy) and
+// src/indicators.py from the CloudAgents backtesting system.
+//
+// Academic basis
+// --------------
+//   Lehmann (1990) "Fads, Martingales, and Market Efficiency" — 1-week reversal
+//   Jegadeesh (1990) "Evidence of Predictable Behavior of Security Returns"
+//   Connors & Alvarez (2009) "Short-Term Trading Strategies That Work"
+//   Blitz, Huij & Martens (2011) "Momentum and Reversal" — Sharpe ~0.52
+//
+// Signal rules
+// ------------
+//   ENTRY  (all must be true — checked every 5 bars, i.e. weekly):
+//     1. Close > SMA(200)                — uptrend filter (avoid falling knives)
+//     2. Bollinger %B < 0.25             — price in lower 25% of 20-bar band
+//        %B = (Close − Lower) / (Upper − Lower)  [2-std, 20-bar]
+//     3. 5-day return < -2%              — underperformed peers this week
+//        (Proxy for cross-sectional z-score < -1.0 used in Python system;
+//         the Python system compares across 100 stocks simultaneously.
+//         Here we use a fixed -2% threshold on the stock's own 5-day return,
+//         which approximates the same oversold condition on single securities.)
+//     4. RSI(2) < 20                     — near-term selling exhaustion
+//        Uses SIMPLE moving average (not Wilder EMA) to match Python's rsi_fast()
+//     5. ≥ 1 consecutive down day        — confirms selling pressure, not noise
+//
+//   EXIT  (first condition wins, checked every bar):
+//     1. RSI(2) > 60                     — selling exhausted, recovery underway
+//     2. Bollinger %B > 0.75             — price in upper 25% of band
+//     3. T + 5 time stop                 — max hold = 5 trading days
+//     4. Hard stop-loss: Close < entry × (1 − 7%)
+//
+// Position sizing
+// ---------------
+//   In the Python system weights are inverse-volatility across a 100-stock
+//   universe.  In TradingView (single security) this script is fully
+//   invested (100 % of equity) when the signal fires.
+//   Since this is a short-term swing trade (max 5 days), size at 3–5 % of
+//   your total portfolio per position if running on multiple stocks.
+//
+// Important note on cross-sectional condition
+// -------------------------------------------
+//   The Python strategy uses a cross-sectional z-score of the 5-day return
+//   relative to all 100 stocks in the universe.  In TradingView's single-
+//   security environment this is approximated by a fixed -2 % 5-day return
+//   threshold (input: i_fiveday_threshold).  On high-volatility stocks
+//   (NVDA, TSLA) consider relaxing to -3 %.  On low-volatility stocks
+//   (JNJ, PG) consider tightening to -1.5 %.
+//
+// Recommended stocks  →  see pine_scripts/README.md
+// Recommended timeframe  →  Daily (1D)
+//
+// ============================================================================
+
+//@version=5
+strategy(
+    title       = "Mean Reversion RSI2+BB (CloudAgents Strategy 2)",
+    shorttitle  = "MR-RSI2",
+    overlay     = true,
+    default_qty_type  = strategy.percent_of_equity,
+    default_qty_value = 100,
+    initial_capital   = 100000,
+    commission_type   = strategy.commission.percent,
+    commission_value  = 0.10,   // 0.10% one-way (matches Python fee_rate=0.001)
+    slippage          = 5
+)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+i_sma_window         = input.int(200,  "Trend SMA window",             minval=50)
+i_bb_window          = input.int(20,   "Bollinger Band window",        minval=5)
+i_bb_mult            = input.float(2.0, "Bollinger Band std mult",     minval=0.5, step=0.5)
+i_bb_entry_pct_b     = input.float(0.25,"BB %B entry threshold",      minval=0.0, maxval=0.5,
+                         tooltip="Enter when %B < this. Python default: 0.25")
+i_bb_exit_pct_b      = input.float(0.75,"BB %B exit threshold",       minval=0.5, maxval=1.0,
+                         tooltip="Exit when %B > this. Python default: 0.75")
+i_rsi2_entry         = input.float(20.0,"RSI(2) entry threshold",     minval=1,  maxval=50,
+                         tooltip="Enter when RSI(2) < this. Python default: 20")
+i_rsi2_exit          = input.float(60.0,"RSI(2) exit threshold",      minval=50, maxval=99,
+                         tooltip="Exit when RSI(2) > this. Python default: 60")
+i_fiveday_threshold  = input.float(-2.0,"5-day return threshold (%)", minval=-10, maxval=0, step=0.5,
+                         tooltip="Proxy for cross-sectional z-score < -1. Use -2% as default. " +
+                                 "Relax to -3% for high-vol stocks (NVDA/TSLA). " +
+                                 "Tighten to -1.5% for low-vol stocks (JNJ/PG).")
+i_min_down_days      = input.int(1,    "Min consecutive down days",    minval=1,
+                         tooltip="Streak filter. Python default: 1")
+i_time_stop          = input.int(5,    "Time stop (bars)",             minval=1,
+                         tooltip="Exit after N bars regardless. Python default: 5")
+i_hard_stop_pct      = input.float(7.0, "Hard stop-loss (%)",         minval=1, maxval=20,
+                         tooltip="Exit if price drops > N% from entry. Python default: 7%")
+i_rebalance_days     = input.int(5,    "Scan every N bars",            minval=1,
+                         tooltip="Weekly ≈ 5 trading days. Python default: 5")
+
+// ── Indicators ───────────────────────────────────────────────────────────────
+
+// 1. Trend filter
+sma200     = ta.sma(close, i_sma_window)
+above_sma  = close > sma200
+
+// 2. Bollinger %B
+//    Matches Python: (close - lower) / (upper - lower)  with SMA-based bands
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, i_bb_window, i_bb_mult)
+band_width = bb_upper - bb_lower
+pct_b      = band_width > 0 ? (close - bb_lower) / band_width : na
+
+// 3. RSI(2) with SIMPLE moving average (matches Python's rsi_fast())
+//    Pine Script's built-in ta.rsi() uses Wilder RMA — NOT the same as SMA.
+//    We implement it manually with ta.sma() to match the Python code exactly.
+rsi2_period = 2
+delta_      = ta.change(close)
+gain_       = math.max(delta_, 0.0)
+loss_       = math.max(-delta_, 0.0)
+avg_gain_   = ta.sma(gain_, rsi2_period)
+avg_loss_   = ta.sma(loss_, rsi2_period)
+// Edge cases: both zero → na (flat/no data); only gains → 100
+rsi2 = (avg_gain_ == 0 and avg_loss_ == 0) ? na :
+       avg_loss_ == 0                        ? 100.0 :
+       100.0 - 100.0 / (1.0 + avg_gain_ / avg_loss_)
+
+// 4. Consecutive down days
+//    Matches Python's consecutive_down_days(): count resets to 0 on an up day
+var int streak = 0
+streak := close < close[1] ? streak[1] + 1 : 0
+enough_streak = streak >= i_min_down_days
+
+// 5. 5-day return (proxy for cross-sectional z-score condition)
+//    Python: 5-day log return z-score across 100 stocks < -1.0
+//    Pine proxy: raw 5-day return < i_fiveday_threshold%
+fiveday_return = (close / close[5] - 1.0) * 100.0
+weak_5day      = fiveday_return < i_fiveday_threshold
+
+// ── Entry Condition (all must be true) ───────────────────────────────────────
+is_scan_bar    = bar_index % i_rebalance_days == 0
+entry_signal   = is_scan_bar         and
+                 above_sma            and
+                 not na(pct_b) and pct_b < i_bb_entry_pct_b and
+                 not na(rsi2)  and rsi2 < i_rsi2_entry       and
+                 enough_streak        and
+                 weak_5day
+
+// ── Position Tracking ─────────────────────────────────────────────────────────
+var int   entry_bar   = na    // bar_index when position was opened
+var float entry_price = na    // close at entry for hard stop calculation
+
+in_position = strategy.position_size > 0
+
+if entry_signal and not in_position
+    entry_bar   := bar_index
+    entry_price := close
+
+// ── Exit Conditions ───────────────────────────────────────────────────────────
+bars_held = in_position ? bar_index - nz(entry_bar, bar_index) : 0
+
+// Exit 1: RSI(2) recovered
+exit_rsi2 = in_position and not na(rsi2) and rsi2 > i_rsi2_exit
+
+// Exit 2: Bollinger %B reached upper zone
+exit_bb = in_position and not na(pct_b) and pct_b > i_bb_exit_pct_b
+
+// Exit 3: Time stop (max 5 trading days hold)
+exit_time = in_position and bars_held >= i_time_stop
+
+// Exit 4: Hard stop-loss (-7% from entry)
+exit_stop = in_position and not na(entry_price) and
+            close < entry_price * (1.0 - i_hard_stop_pct / 100.0)
+
+any_exit = exit_rsi2 or exit_bb or exit_time or exit_stop
+
+// ── Execute Orders ────────────────────────────────────────────────────────────
+if entry_signal and not in_position
+    strategy.entry("Long", strategy.long)
+
+if exit_rsi2
+    strategy.close("Long", comment="RSI2 Exit")
+    entry_bar   := na
+    entry_price := na
+
+if exit_bb and not exit_rsi2
+    strategy.close("Long", comment="%B Exit")
+    entry_bar   := na
+    entry_price := na
+
+if exit_time and not exit_rsi2 and not exit_bb
+    strategy.close("Long", comment="Time Stop")
+    entry_bar   := na
+    entry_price := na
+
+if exit_stop and not exit_rsi2 and not exit_bb and not exit_time
+    strategy.close("Long", comment="Hard Stop -7%")
+    entry_bar   := na
+    entry_price := na
+
+// ── Plots ─────────────────────────────────────────────────────────────────────
+plot(sma200, "SMA 200", color=color.new(color.blue, 0), linewidth=2)
+plot(bb_upper, "BB Upper", color=color.new(color.gray, 60), linewidth=1)
+plot(bb_mid,   "BB Mid",   color=color.new(color.gray, 40), linewidth=1)
+plot(bb_lower, "BB Lower", color=color.new(color.gray, 60), linewidth=1)
+
+// Hard stop line while in position
+plot(in_position and not na(entry_price) ?
+     entry_price * (1.0 - i_hard_stop_pct / 100.0) : na,
+     "Hard Stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=1)
+
+// Entry/exit markers
+plotshape(entry_signal, title="Entry", style=shape.triangleup,
+          location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(any_exit, title="Exit", style=shape.triangledown,
+          location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+// Highlight bars where ALL entry conditions are met (even if already in position)
+all_cond = above_sma and not na(pct_b) and pct_b < i_bb_entry_pct_b and
+           not na(rsi2) and rsi2 < i_rsi2_entry and enough_streak and weak_5day
+bgcolor(all_cond ? color.new(color.green, 90) : na, title="All Conditions Met")
+
+// ── Info Table ────────────────────────────────────────────────────────────────
+var table info_tbl = table.new(position.top_right, 2, 8,
+    bgcolor=color.new(color.white, 10), border_width=1)
+
+if barstate.islast
+    table.cell(info_tbl, 0, 0, "Indicator",     text_color=color.gray,  text_size=size.small)
+    table.cell(info_tbl, 1, 0, "Value",          text_color=color.gray,  text_size=size.small)
+    table.cell(info_tbl, 0, 1, "SMA(200)",       text_size=size.small)
+    table.cell(info_tbl, 1, 1, str.tostring(math.round(sma200, 2)),           text_size=size.small)
+    table.cell(info_tbl, 0, 2, "Bollinger %B",  text_size=size.small)
+    table.cell(info_tbl, 1, 2, not na(pct_b) ? str.tostring(math.round(pct_b, 3)) : "N/A",
+               text_color=not na(pct_b) and pct_b < i_bb_entry_pct_b ?
+                          color.green : color.black,                            text_size=size.small)
+    table.cell(info_tbl, 0, 3, "RSI(2)",         text_size=size.small)
+    table.cell(info_tbl, 1, 3, not na(rsi2) ? str.tostring(math.round(rsi2, 1)) : "N/A",
+               text_color=not na(rsi2) and rsi2 < i_rsi2_entry ?
+                          color.green : color.black,                            text_size=size.small)
+    table.cell(info_tbl, 0, 4, "5-day Ret%",     text_size=size.small)
+    table.cell(info_tbl, 1, 4, str.tostring(math.round(fiveday_return, 2)) + "%",
+               text_color=weak_5day ? color.green : color.black,                text_size=size.small)
+    table.cell(info_tbl, 0, 5, "Down Streak",    text_size=size.small)
+    table.cell(info_tbl, 1, 5, str.tostring(streak),
+               text_color=enough_streak ? color.green : color.black,            text_size=size.small)
+    table.cell(info_tbl, 0, 6, "Bars Held",      text_size=size.small)
+    table.cell(info_tbl, 1, 6, str.tostring(bars_held),                        text_size=size.small)
+    table.cell(info_tbl, 0, 7, "In Position",    text_size=size.small)
+    table.cell(info_tbl, 1, 7, in_position ? "YES" : "NO",
+               text_color=in_position ? color.green : color.red,                text_size=size.small)

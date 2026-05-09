@@ -77,3 +77,105 @@ def cross_sectional_zscore(df: pd.DataFrame) -> pd.DataFrame:
     mean = df.mean(axis=1)
     std = df.std(axis=1).replace(0, np.nan)
     return df.sub(mean, axis=0).div(std, axis=0)
+
+
+# ---------------------------------------------------------------------------
+# Additional indicators for Mean-Reversion Strategy
+# ---------------------------------------------------------------------------
+
+def rsi_fast(prices: pd.DataFrame, window: int = 2) -> pd.DataFrame:
+    """
+    Fast RSI using *simple* (not EMA) moving averages over *window* periods.
+
+    Connors & Alvarez (2009) use RSI(2) with a simple rolling average rather
+    than Wilder's EMA to make the indicator more reactive to very recent price
+    changes.  This is the standard practitioner implementation of RSI(2).
+
+    When average loss is zero (pure uptrend), RSI returns 100.
+    """
+    delta    = prices.diff()
+    gain     = delta.clip(lower=0)
+    loss     = (-delta).clip(lower=0)
+    avg_gain = gain.rolling(window, min_periods=window).mean()
+    avg_loss = loss.rolling(window, min_periods=window).mean()
+
+    # When avg_loss = 0 but avg_gain > 0 → RSI = 100 (pure uptrend)
+    # When both = 0 → NaN (no data / flat period)
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    result = 100 - (100 / (1 + rs))
+
+    # Fill RSI = 100 where gains exist but losses are zero
+    pure_up = (avg_loss == 0) & (avg_gain > 0)
+    result  = result.where(~pure_up, 100.0)
+    return result
+
+
+def bollinger_pct_b(
+    prices: pd.DataFrame, window: int = 20, num_std: float = 2.0
+) -> pd.DataFrame:
+    """
+    Bollinger Band %B indicator.
+
+    %B = (Price − Lower Band) / (Upper Band − Lower Band)
+
+    * %B = 0  → price is at the lower band (2σ below the mean)
+    * %B = 1  → price is at the upper band (2σ above the mean)
+    * %B < 0.2 → oversold signal used by the mean-reversion strategy
+
+    References
+    ----------
+    * Bollinger, J. (2002), "Bollinger on Bollinger Bands"
+    """
+    mid = prices.rolling(window, min_periods=window).mean()
+    std = prices.rolling(window, min_periods=window).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    band_width = (upper - lower).replace(0, np.nan)
+    return (prices - lower) / band_width
+
+
+def consecutive_down_days(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    Count of consecutive calendar days with a declining close.
+
+    Returns an integer DataFrame with the same shape as *prices*.
+    A value of 3 means the stock closed lower three days in a row.
+    The count resets to 0 on any up day.
+
+    This is vectorised: no Python loops over rows.
+    """
+    is_down = (prices.diff() < 0).astype(int)
+    # Cumulative sum that resets to 0 on an up day
+    # Standard trick: group by cumsum of non-down days
+    result = pd.DataFrame(0, index=prices.index, columns=prices.columns)
+    for col in prices.columns:
+        col_down = is_down[col]
+        streak_id = (~col_down.astype(bool)).cumsum()
+        result[col] = col_down.groupby(streak_id).cumsum()
+    return result
+
+
+def nday_return_zscore(
+    prices: pd.DataFrame, lookback: int = 5
+) -> pd.DataFrame:
+    """
+    Cross-sectional z-score of the n-day price return.
+
+    Used by the mean-reversion strategy to identify stocks that have
+    underperformed their peers over the very short term.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Adjusted close prices.
+    lookback : int
+        Number of trading days for the return window.
+
+    Returns
+    -------
+    pd.DataFrame
+        Cross-sectionally standardised n-day returns (z-scores).
+    """
+    nday_ret = np.log(prices / prices.shift(lookback))
+    return cross_sectional_zscore(nday_ret)
+

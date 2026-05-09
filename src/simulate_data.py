@@ -51,6 +51,9 @@ REGIME_TRANSITION = np.array([
     [0.050, 0.930, 0.020],   # Bear lasts ~20 days on avg then recovers
     [0.020, 0.010, 0.970],   # Chop is moderately sticky
 ])
+# Sanity check: each row must be a valid probability distribution
+assert np.allclose(REGIME_TRANSITION.sum(axis=1), 1.0), \
+    "REGIME_TRANSITION rows must sum to 1.0"
 
 STOCK_ALPHA_MEAN   = 0.00020    # cross-sectional average α ≈ 5 % p.a. extra
 STOCK_ALPHA_STD    = 0.00060    # dispersion → some losers, some 40 % p.a. winners

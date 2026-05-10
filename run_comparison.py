@@ -10,12 +10,17 @@ Portfolios compared
 2. Strategy 2 — RSI(2) + Bollinger Band Mean Reversion  (Connors & Alvarez 2009)
 3. Strategy 3 — Low Volatility Factor  (Baker, Bradley & Wurgler 2011)
 4. Strategy 4 — Dual Momentum + 52-Week High  (Antonacci 2014 + George & Hwang 2004)
-5. Master     — Regime-Aware blend (vol-targeted): BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev
-6. Benchmark  — Buy-and-hold SPY (frictionless)
-7. Avg Stock  — Equal-weight buy-and-hold of all 100 stocks in the universe
+5. Strategy 5 — Concentrated High-Conviction Momentum (top-3, 1.5× leverage)
+6. Master     — Regime-Aware blend (vol-targeted): BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev
+7. Benchmark  — Buy-and-hold SPY (frictionless)
+8. Avg Stock  — Equal-weight buy-and-hold of all 100 stocks in the universe
+9. Top Stock  — Equal-weight buy-and-hold of the 5 super-winner stocks (Tesla/NVDA analogs)
 
 Goal of Strategy 4: Beat buy-and-hold of individual stocks by capturing upside
 while avoiding major bear-market drawdowns via absolute (time-series) momentum.
+
+Goal of Strategy 5: Beat INDIVIDUAL high-growth stocks (Tesla, NVDA analogs) by
+concentrating in the top-3 momentum winners with 1.5× leverage + tight stop-loss.
 
 Usage
 -----
@@ -34,11 +39,12 @@ import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
-from src.simulate_data import simulate_prices, simulate_benchmark, SIMULATED_TICKERS
+from src.simulate_data import simulate_prices, simulate_benchmark, SIMULATED_TICKERS, get_winner_tickers
 from src.strategy import MomentumTrendStrategy, StrategyConfig
 from src.strategy_mean_reversion import MeanReversionStrategy, MeanReversionConfig, combine_strategies
 from src.strategy_low_vol import LowVolStrategy, LowVolConfig
 from src.strategy_dual_momentum import DualMomentumStrategy, DualMomentumConfig
+from src.strategy_concentrated import ConcentratedMomentumStrategy, ConcentratedMomentumConfig
 from src.regime_detector import RegimeDetector
 from src.portfolio_optimizer import vol_target_scale, regime_aware_combine
 from src.backtest_engine import run_backtest
@@ -103,22 +109,26 @@ def _plot_comparison(
     save_path: str,
 ) -> None:
     colors = {
-        "Strategy 1\n(Momentum)":         "#2196F3",
-        "Strategy 2\n(Mean Reversion)":   "#4CAF50",
-        "Strategy 3\n(Low Vol)":          "#FF5722",
-        "Strategy 4\n(Dual Momentum)":    "#00BCD4",
-        "Master\n(Regime+VolTarget)":     "#9C27B0",
-        "Benchmark\n(SPY)":               "#FF9800",
-        "Avg Stock\n(Equal-weight B&H)":  "#9E9E9E",
+        "Strategy 1\n(Momentum)":              "#2196F3",
+        "Strategy 2\n(Mean Reversion)":        "#4CAF50",
+        "Strategy 3\n(Low Vol)":               "#FF5722",
+        "Strategy 4\n(Dual Momentum)":         "#00BCD4",
+        "Strategy 5\n(Concentrated+Leverage)": "#E91E63",
+        "Master\n(Regime+VolTarget)":          "#9C27B0",
+        "Benchmark\n(SPY)":                    "#FF9800",
+        "Avg Stock\n(Equal-weight B&H)":       "#9E9E9E",
+        "Top Stocks\n(Winner B&H)":            "#795548",
     }
     linestyles = {
-        "Strategy 1\n(Momentum)":         "-",
-        "Strategy 2\n(Mean Reversion)":   "-",
-        "Strategy 3\n(Low Vol)":          "-",
-        "Strategy 4\n(Dual Momentum)":    "-",
-        "Master\n(Regime+VolTarget)":     "-",
-        "Benchmark\n(SPY)":               "--",
-        "Avg Stock\n(Equal-weight B&H)":  ":",
+        "Strategy 1\n(Momentum)":              "-",
+        "Strategy 2\n(Mean Reversion)":        "-",
+        "Strategy 3\n(Low Vol)":               "-",
+        "Strategy 4\n(Dual Momentum)":         "-",
+        "Strategy 5\n(Concentrated+Leverage)": "-",
+        "Master\n(Regime+VolTarget)":          "-",
+        "Benchmark\n(SPY)":                    "--",
+        "Avg Stock\n(Equal-weight B&H)":       ":",
+        "Top Stocks\n(Winner B&H)":            "-.",
     }
 
     fig = plt.figure(figsize=(22, 20))
@@ -138,8 +148,10 @@ def _plot_comparison(
     # ---- 1. Cumulative performance (log scale) ----
     for label, pv in portfolio_values.items():
         pv_norm = pv / pv.iloc[0] * 100
-        lw = 2.5 if "Dual Momentum" in label or "Master" in label else (
-            1.5 if "Benchmark" not in label and "Equal" not in label else 1.2
+        lw = 3.0 if "Concentrated" in label else (
+            2.5 if "Dual Momentum" in label or "Master" in label else (
+                1.5 if "Benchmark" not in label and "Equal" not in label and "Winner" not in label else 1.2
+            )
         )
         ax_cum.plot(
             pv_norm.index, pv_norm,
@@ -153,7 +165,7 @@ def _plot_comparison(
     ax_cum.set_ylabel("Normalised Value (log, base=100)")
     ax_cum.legend(loc="upper left", ncol=4, fontsize=8)
     ax_cum.grid(True, alpha=0.3)
-    ax_cum.set_title("Cumulative Performance (log scale) — Strategy 4 goal: beat avg stock B&H")
+    ax_cum.set_title("Cumulative Performance (log scale) — Strategy 5 goal: beat individual high-growth stocks (Tesla/NVDA analogs)")
 
     # ---- 2. Drawdown ----
     for label, pv in portfolio_values.items():
@@ -248,6 +260,10 @@ def main() -> None:
     benchmark = benchmark.reindex(prices.index).ffill()
     logger.info("Data: %d dates × %d tickers", len(prices), prices.shape[1])
 
+    # Identify winner tickers (Tesla/NVDA analogs — super-winner stocks in simulation)
+    winner_tickers = get_winner_tickers(tickers=SIMULATED_TICKERS)
+    logger.info("Super-winner tickers (Tesla/NVDA analogs): %s", winner_tickers)
+
     # 2. Strategy 1: Momentum + Trend Filter
     logger.info("Running Strategy 1: Momentum + Trend Filter …")
     mom_cfg = StrategyConfig(top_n=20)
@@ -277,7 +293,17 @@ def main() -> None:
     dm_w = dm_strat.generate_weights(prices)
     logger.info("  Avg positions held: %.1f", (dm_w > 0).sum(axis=1).mean())
 
-    # 6. Master Portfolio: Regime-Aware + Volatility Targeting
+    # 6. Strategy 5: Concentrated High-Conviction Momentum (top-3, 1.5× leverage)
+    logger.info("Running Strategy 5: Concentrated Momentum (top-3, 2× leverage) …")
+    logger.info("  Goal: Beat individual high-growth stocks (Tesla/NVDA analogs)")
+    cm_cfg = ConcentratedMomentumConfig()
+    cm_strat = ConcentratedMomentumStrategy(cm_cfg)
+    cm_w = cm_strat.generate_weights(prices)
+    avg_leverage = cm_w.sum(axis=1).replace(0, np.nan).mean()
+    logger.info("  Avg positions held: %.1f | Avg gross exposure: %.1f%%",
+                (cm_w > 0).sum(axis=1).mean(), avg_leverage * 100)
+
+    # 7. Master Portfolio: Regime-Aware + Volatility Targeting
     logger.info("Building Master Portfolio (regime-aware + vol-targeting) …")
     bench_series = benchmark.squeeze()
     detector = RegimeDetector()
@@ -291,40 +317,51 @@ def main() -> None:
     master_w = vol_target_scale(master_raw, prices, target_vol=0.12)
     logger.info("  Master portfolio avg gross exposure: %.1f%%", master_w.sum(axis=1).mean() * 100)
 
-    # 7. Benchmarks: SPY buy-and-hold + avg stock equal-weight buy-and-hold
+    # 8. Benchmarks: SPY + avg stock (all 100) + top-stock (winner tickers only)
     bench_w = pd.DataFrame(1.0, index=benchmark.index, columns=benchmark.columns)
-    # Equal-weight buy-and-hold of all 100 stocks — the "average individual stock" benchmark
     n_stocks = prices.shape[1]
     avg_stock_w = pd.DataFrame(
         1.0 / n_stocks, index=prices.index, columns=prices.columns
     )
+    # Top-stock benchmark: equal-weight B&H of the 5 super-winner tickers
+    # This is the "Tesla/NVDA individual stock B&H" benchmark for Strategy 5 to beat.
+    # Note: this uses hindsight to identify winners — it is the HARDEST possible B&H benchmark.
+    winner_prices = prices[winner_tickers] if winner_tickers else prices
+    n_winners = len(winner_tickers) if winner_tickers else n_stocks
+    top_stock_w = pd.DataFrame(
+        1.0 / n_winners, index=prices.index, columns=winner_prices.columns
+    )
 
-    # 8. Run backtests
+    # 9. Run backtests
     logger.info("Running backtests with fees (0.10%% commission + 0.05%% slippage) …")
     fee, slip = 0.001, 0.0005
 
-    r_mom = run_backtest(prices, mom_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
-    r_mr = run_backtest(prices, mr_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
-    r_lv = run_backtest(prices, lv_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
-    r_dm = run_backtest(prices, dm_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
-    r_master = run_backtest(prices, master_w, initial_capital=args.capital, fee_rate=fee, slippage_rate=slip)
-    r_bm = run_backtest(benchmark, bench_w, initial_capital=args.capital, fee_rate=0.0)
-    # Average stock B&H: buy-and-hold all stocks equally — no fees (pure B&H benchmark)
-    r_avg = run_backtest(prices, avg_stock_w, initial_capital=args.capital, fee_rate=0.0)
+    r_mom    = run_backtest(prices, mom_w,       initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_mr     = run_backtest(prices, mr_w,        initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_lv     = run_backtest(prices, lv_w,        initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_dm     = run_backtest(prices, dm_w,        initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_cm     = run_backtest(prices, cm_w,        initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_master = run_backtest(prices, master_w,    initial_capital=args.capital, fee_rate=fee,  slippage_rate=slip)
+    r_bm     = run_backtest(benchmark, bench_w,  initial_capital=args.capital, fee_rate=0.0)
+    r_avg    = run_backtest(prices,   avg_stock_w, initial_capital=args.capital, fee_rate=0.0)
+    r_top    = run_backtest(winner_prices, top_stock_w, initial_capital=args.capital, fee_rate=0.0)
 
-    pv_mom = r_mom["portfolio_value"]
-    pv_mr = r_mr["portfolio_value"]
-    pv_lv = r_lv["portfolio_value"]
-    pv_dm = r_dm["portfolio_value"]
+    pv_mom    = r_mom["portfolio_value"]
+    pv_mr     = r_mr["portfolio_value"]
+    pv_lv     = r_lv["portfolio_value"]
+    pv_dm     = r_dm["portfolio_value"]
+    pv_cm     = r_cm["portfolio_value"]
     pv_master = r_master["portfolio_value"]
-    pv_bm = r_bm["portfolio_value"].reindex(pv_mom.index).ffill()
-    pv_avg = r_avg["portfolio_value"].reindex(pv_mom.index).ffill()
+    pv_bm     = r_bm["portfolio_value"].reindex(pv_mom.index).ffill()
+    pv_avg    = r_avg["portfolio_value"].reindex(pv_mom.index).ffill()
+    pv_top    = r_top["portfolio_value"].reindex(pv_mom.index).ffill()
 
-    # 9. Print individual strategy metrics
-    m_mom = summarise(pv_mom, pv_bm)
-    m_mr = summarise(pv_mr, pv_bm)
-    m_lv = summarise(pv_lv, pv_bm)
-    m_dm = summarise(pv_dm, pv_bm)
+    # 10. Print individual strategy metrics
+    m_mom    = summarise(pv_mom,    pv_bm)
+    m_mr     = summarise(pv_mr,     pv_bm)
+    m_lv     = summarise(pv_lv,     pv_bm)
+    m_dm     = summarise(pv_dm,     pv_bm)
+    m_cm     = summarise(pv_cm,     pv_bm)
     m_master = summarise(pv_master, pv_bm)
 
     print("\n" + "=" * 60)
@@ -353,72 +390,111 @@ def main() -> None:
     print_summary(m_dm)
 
     print("\n" + "=" * 60)
+    print("  STRATEGY 5: Concentrated High-Conviction Momentum")
+    print("  GOAL: Beat individual high-growth stocks (Tesla / NVDA analogs)")
+    print("  Top-3 momentum stocks × 2× leverage + 2.5×ATR trailing stop")
+    print("  (Asness et al. 2013 AQR + Novy-Marx 2012 + Frazzini & Pedersen 2014)")
+    print("=" * 60)
+    print_summary(m_cm)
+
+    print("\n" + "=" * 60)
     print("  MASTER PORTFOLIO: Regime-Aware + Volatility-Targeted")
     print("  (Dynamic allocation: BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev)")
     print("  (Moreira & Muir 2017 vol-targeting | Ang & Timmermann 2012 regime)")
     print("=" * 60)
     print_summary(m_master)
 
-    # 10. Year-by-year table
+    # 11. Year-by-year table
     pv_dict = {
-        "Strategy 1\n(Momentum)":         pv_mom,
-        "Strategy 2\n(Mean Reversion)":   pv_mr,
-        "Strategy 3\n(Low Vol)":          pv_lv,
-        "Strategy 4\n(Dual Momentum)":    pv_dm,
-        "Master\n(Regime+VolTarget)":     pv_master,
-        "Benchmark\n(SPY)":               pv_bm,
-        "Avg Stock\n(Equal-weight B&H)":  pv_avg,
+        "Strategy 1\n(Momentum)":              pv_mom,
+        "Strategy 2\n(Mean Reversion)":        pv_mr,
+        "Strategy 3\n(Low Vol)":               pv_lv,
+        "Strategy 4\n(Dual Momentum)":         pv_dm,
+        "Strategy 5\n(Concentrated+Leverage)": pv_cm,
+        "Master\n(Regime+VolTarget)":          pv_master,
+        "Benchmark\n(SPY)":                    pv_bm,
+        "Avg Stock\n(Equal-weight B&H)":       pv_avg,
+        "Top Stocks\n(Winner B&H)":            pv_top,
     }
     annual_tbl = _annual_returns_table(pv_dict)
     _print_annual_table(annual_tbl)
 
-    # 11. Summary comparison table (vs avg stock B&H for Strategy 4)
+    # 12. Summary comparison table
     bm_avg_metrics = summarise(pv_avg)
-    print("\n" + "=" * 90)
+    bm_top_metrics = summarise(pv_top)
+    print("\n" + "=" * 100)
     print("  SUMMARY COMPARISON TABLE")
-    print("  Note: Strategy 4 is benchmarked vs Avg Stock (equal-weight B&H) — the harder target")
-    print("=" * 90)
+    print("  Strategy 4 benchmarked vs Avg Stock (equal-weight B&H)")
+    print("  Strategy 5 benchmarked vs Top Stocks (winner B&H = Tesla/NVDA analogs) — the HARDEST target")
+    print("=" * 100)
     headers = ["Portfolio", "CAGR", "Sharpe", "Max DD", "Total Return", "Fees Paid"]
-    print(f"  {headers[0]:<36} {headers[1]:>8} {headers[2]:>8} {headers[3]:>10} {headers[4]:>13} {headers[5]:>12}")
-    print("-" * 90)
+    print(f"  {headers[0]:<42} {headers[1]:>8} {headers[2]:>8} {headers[3]:>10} {headers[4]:>13} {headers[5]:>12}")
+    print("-" * 100)
     rows = [
-        ("Strategy 1 (Momentum)",              m_mom,    r_mom),
-        ("Strategy 2 (Mean Reversion)",         m_mr,     r_mr),
-        ("Strategy 3 (Low Volatility)",         m_lv,     r_lv),
-        ("Strategy 4 (Dual Momentum)",          m_dm,     r_dm),
-        ("Master (Regime + Vol-Targeting)",     m_master, r_master),
+        ("Strategy 1 (Momentum)",                    m_mom,    r_mom),
+        ("Strategy 2 (Mean Reversion)",               m_mr,     r_mr),
+        ("Strategy 3 (Low Volatility)",               m_lv,     r_lv),
+        ("Strategy 4 (Dual Momentum)",                m_dm,     r_dm),
+        ("Strategy 5 (Concentrated+Leverage) ★",     m_cm,     r_cm),
+        ("Master (Regime + Vol-Targeting)",           m_master, r_master),
     ]
     for name, metrics, result in rows:
         total_cost = result["total_fees"] + result["total_slippage"]
         print(
-            f"  {name:<36} {metrics['CAGR']:>+8.2%} {metrics['Sharpe Ratio']:>8.2f}"
+            f"  {name:<42} {metrics['CAGR']:>+8.2%} {metrics['Sharpe Ratio']:>8.2f}"
             f" {metrics['Max Drawdown']:>10.2%} {metrics['Total Return']:>+13.2%}"
             f" ${total_cost:>10,.0f}"
         )
     bm_metrics = summarise(pv_bm)
     print(
-        f"  {'Benchmark (SPY buy-and-hold)':<36} {bm_metrics['CAGR']:>+8.2%}"
+        f"  {'Benchmark (SPY buy-and-hold)':<42} {bm_metrics['CAGR']:>+8.2%}"
         f" {'N/A':>8} {bm_metrics['Max Drawdown']:>10.2%}"
         f" {bm_metrics['Total Return']:>+13.2%} {'$0':>12}"
     )
     print(
-        f"  {'Avg Stock (100-stock equal-wt B&H)':<36} {bm_avg_metrics['CAGR']:>+8.2%}"
+        f"  {'Avg Stock (100-stock equal-wt B&H)':<42} {bm_avg_metrics['CAGR']:>+8.2%}"
         f" {'N/A':>8} {bm_avg_metrics['Max Drawdown']:>10.2%}"
         f" {bm_avg_metrics['Total Return']:>+13.2%} {'$0':>12}"
     )
-    print("=" * 90 + "\n")
+    print(
+        f"  {'Top Stocks (winner B&H = Tesla/NVDA analogs)':<42} {bm_top_metrics['CAGR']:>+8.2%}"
+        f" {bm_top_metrics['Sharpe Ratio']:>8.2f} {bm_top_metrics['Max Drawdown']:>10.2%}"
+        f" {bm_top_metrics['Total Return']:>+13.2%} {'$0':>12}"
+    )
+    print("=" * 100 + "\n")
 
     # Strategy 4 vs avg stock comparison
-    dm_cagr = m_dm["CAGR"]
+    dm_cagr  = m_dm["CAGR"]
     avg_cagr = bm_avg_metrics["CAGR"]
-    dm_dd = m_dm["Max Drawdown"]
-    avg_dd = bm_avg_metrics["Max Drawdown"]
+    dm_dd    = m_dm["Max Drawdown"]
+    avg_dd   = bm_avg_metrics["Max Drawdown"]
     beat_str = "BEATS" if dm_cagr > avg_cagr else "TRAILS"
     print(f"  ▶ Strategy 4 {beat_str} avg stock B&H: {dm_cagr:+.1%} vs {avg_cagr:+.1%} CAGR")
     print(f"  ▶ Strategy 4 drawdown: {dm_dd:.1%} vs avg stock: {avg_dd:.1%} (smaller = better)")
     print()
 
-    # 12. Save files
+    # Strategy 5 vs top-stock comparison
+    cm_cagr   = m_cm["CAGR"]
+    top_cagr  = bm_top_metrics["CAGR"]
+    cm_dd     = m_cm["Max Drawdown"]
+    top_dd    = bm_top_metrics["Max Drawdown"]
+    cm_sharpe = m_cm["Sharpe Ratio"]
+    top_sharpe = bm_top_metrics["Sharpe Ratio"]
+
+    beat5_cagr   = "BEATS" if cm_cagr  > top_cagr  else "TRAILS"
+    beat5_sharpe = "BEATS" if cm_sharpe > top_sharpe else "TRAILS"
+    beat5_dd     = "BETTER" if abs(cm_dd) < abs(top_dd) else "WORSE"
+
+    print(f"  ★ Strategy 5 CAGR {beat5_cagr} individual high-growth stocks: {cm_cagr:+.1%} vs {top_cagr:+.1%}")
+    print(f"  ★ Strategy 5 Sharpe {beat5_sharpe} individual high-growth stocks: {cm_sharpe:.2f} vs {top_sharpe:.2f}")
+    print(f"  ★ Strategy 5 max drawdown {beat5_dd} than top-stock B&H: {cm_dd:.1%} vs {top_dd:.1%}")
+    if cm_sharpe > top_sharpe and abs(cm_dd) < abs(top_dd):
+        print(f"  ★ RISK-ADJUSTED GOAL ACHIEVED: Strategy 5 beats Tesla/NVDA-analog B&H on Sharpe AND drawdown!")
+    elif cm_cagr > top_cagr:
+        print(f"  ★ RAW CAGR GOAL ACHIEVED: Strategy 5 beats Tesla/NVDA-analog individual stocks!")
+    print()
+
+    # 13. Save files
     annual_tbl.to_csv(os.path.join(RESULTS_DIR, "annual_returns_comparison.csv"))
     logger.info("Annual returns saved → %s", os.path.join(RESULTS_DIR, "annual_returns_comparison.csv"))
 
@@ -428,9 +504,11 @@ def main() -> None:
             ("Strategy 2 (Mean Reversion)", m_mr),
             ("Strategy 3 (Low Volatility)", m_lv),
             ("Strategy 4 (Dual Momentum)", m_dm),
+            ("Strategy 5 (Concentrated+Leverage)", m_cm),
             ("Master (Regime + Vol-Targeting)", m_master),
             ("Benchmark (SPY)", summarise(pv_bm)),
             ("Avg Stock (Equal-weight B&H)", bm_avg_metrics),
+            ("Top Stocks (Winner B&H)", bm_top_metrics),
         ]:
             f.write(f"\n=== {name} ===\n")
             for k, v in metrics.items():

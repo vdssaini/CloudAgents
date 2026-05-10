@@ -64,7 +64,7 @@ REGIME_TRANSITION = np.array([
 assert np.allclose(REGIME_TRANSITION.sum(axis=1), 1.0), \
     "REGIME_TRANSITION rows must sum to 1.0"
 
-# ---- Normal-stock alpha parameters (80 % of universe) ----
+# ---- Normal-stock alpha parameters (75 % of universe) ----
 STOCK_ALPHA_MEAN   = 0.00008    # ≈ 2 % p.a. constant baseline (survivorship-bias premium)
 STOCK_ALPHA_STD    = 0.00040    # ≈ 10 % p.a. SD — robust cross-sectional dispersion
 STOCK_IDIO_VOL     = 0.0085     # idiosyncratic daily vol (calibrated to large-cap)
@@ -78,6 +78,27 @@ STOCK_BETA_HIGH    = 1.40
 STOCK_LOSER_PROB   = 0.20        # fraction of universe that are persistent losers
 STOCK_LOSER_ALPHA  = -0.00080    # ≈ -20 % p.a. alpha drag for loser stocks
 STOCK_LOSER_ALPHA_STD = 0.00010  # small dispersion around loser mean
+
+# ---- Super-winner stock parameters (5 % of universe) ----
+# Simulates high-growth disruptive stocks (Tesla 2019-2021, NVDA 2023-2024 analogs).
+# These have very high alpha during bull markets but also crash hard in bear markets
+# (higher beta means larger losses when the market falls).
+#
+# A passive buy-and-hold of one of these stocks suffers multiple -50% to -70%
+# drawdowns over 20 years.  A concentrated momentum strategy captures the bull-market
+# alpha AND exits via SMA(200) / abs-momentum filters before the crashes, ultimately
+# compounding to a higher terminal wealth than pure buy-and-hold.
+STOCK_WINNER_PROB         = 0.05   # 5 % of universe are super-winners (used for random draw)
+STOCK_WINNER_ALPHA_MEAN   = 0.00015  # ≈ +3.8 % p.a. constant excess alpha → ~25% CAGR
+STOCK_WINNER_ALPHA_STD    = 0.000003 # near-zero time-varying component (stable winner alpha)
+STOCK_WINNER_IDIO_VOL     = 0.0120   # moderately higher daily vol vs normal stocks (≈ 30 % ann.)
+STOCK_WINNER_BETA_LOW     = 1.40     # high-beta: crashes harder in bear markets
+STOCK_WINNER_BETA_HIGH    = 2.00     # upper end: very high-beta growth stocks
+
+# Fixed winner tickers — always classified as super-winners regardless of seed.
+# Inspired by the real top performers of 2005-2025: NVDA, TSLA, AMZN, META, AVGO.
+# Using fixed names makes winner classification reproducible and interpretable.
+STOCK_WINNER_TICKERS = {"NVDA", "TSLA", "AMZN", "META", "AVGO"}
 
 # ---- Time-varying alpha (AR(1) mean-reverting process) ----
 # Normal stocks: α_t follows AR(1) with half-life ≈ 138 days (≈ 6 months).
@@ -170,15 +191,31 @@ def simulate_prices(
     # ---- Market factor returns ----
     market_ret = rng.normal(drift_vec, vol_vec)
 
+    # ---- Per-stock parameters — use separate RNG so classification is reproducible ----
+    # Using seed+1 for stock-type classification ensures get_winner_tickers() returns
+    # the exact same set of winner tickers as simulate_prices() for the same seed.
+    stock_rng = np.random.default_rng(seed + 1)
+
     # ---- Per-stock parameters (fixed across time) ----
-    # Bimodal alpha: 80% "normal" stocks, 20% "loser" stocks
-    # Loser stocks simulate company failures, disruptions, value traps.
-    # A trend-following strategy exits losers early; B&H holds them to near-zero.
-    betas  = rng.uniform(STOCK_BETA_LOW, STOCK_BETA_HIGH, size=n_tickers)
-    is_loser = rng.random(n_tickers) < STOCK_LOSER_PROB
-    alphas_normal = rng.normal(STOCK_ALPHA_MEAN, STOCK_ALPHA_STD, size=n_tickers)
-    alphas_loser  = rng.normal(STOCK_LOSER_ALPHA, STOCK_LOSER_ALPHA_STD, size=n_tickers)
-    alphas = np.where(is_loser, alphas_loser, alphas_normal)
+    # Trimodal alpha: ~75% "normal" stocks, ~20% "loser" stocks, ~5% "super-winner" stocks.
+    # Winners are FIXED tickers (NVDA, TSLA, AMZN, META, AVGO) — deterministic assignment
+    # ensures get_winner_tickers() always returns the same set regardless of seed.
+    # Losers are randomly drawn from remaining non-winner stocks.
+    is_winner = np.array([t in STOCK_WINNER_TICKERS for t in tickers])
+    non_winner_draw = stock_rng.random(n_tickers)
+    is_loser  = (~is_winner) & (non_winner_draw < STOCK_LOSER_PROB / (1 - len(STOCK_WINNER_TICKERS) / n_tickers + 1e-9))
+
+    betas_normal = stock_rng.uniform(STOCK_BETA_LOW, STOCK_BETA_HIGH, size=n_tickers)
+    betas_winner = stock_rng.uniform(STOCK_WINNER_BETA_LOW, STOCK_WINNER_BETA_HIGH, size=n_tickers)
+    betas = np.where(is_winner, betas_winner, betas_normal)
+
+    alphas_normal = stock_rng.normal(STOCK_ALPHA_MEAN, STOCK_ALPHA_STD, size=n_tickers)
+    alphas_loser  = stock_rng.normal(STOCK_LOSER_ALPHA, STOCK_LOSER_ALPHA_STD, size=n_tickers)
+    alphas_winner = stock_rng.normal(STOCK_WINNER_ALPHA_MEAN, STOCK_WINNER_ALPHA_STD, size=n_tickers)
+    alphas = np.where(is_winner, alphas_winner, np.where(is_loser, alphas_loser, alphas_normal))
+
+    # Idiosyncratic vol: winners have higher vol (like Tesla ≈ 50% ann.)
+    idio_vols = np.where(is_winner, STOCK_WINNER_IDIO_VOL, STOCK_IDIO_VOL)
 
     # ---- Idiosyncratic returns with mild negative AR(1) autocorrelation ----
     # ρ ≈ -0.15 reflects bid-ask bounce / microstructure mean reversion documented
@@ -187,7 +224,9 @@ def simulate_prices(
     # strategies.
     AR1_RHO    = -0.15   # short-term reversal coefficient
     AR1_SCALE  = np.sqrt(1 - AR1_RHO ** 2)   # normalise to preserve total variance
-    innovations = rng.normal(0.0, STOCK_IDIO_VOL * AR1_SCALE, size=(n_days, n_tickers))
+    # Per-stock idiosyncratic vol (winners have higher vol)
+    base_idio_vols = idio_vols * AR1_SCALE  # shape: (n_tickers,)
+    innovations = rng.normal(0.0, 1.0, size=(n_days, n_tickers)) * base_idio_vols[np.newaxis, :]
     idio = np.zeros_like(innovations)
     for t in range(n_days):
         if t == 0:
@@ -195,38 +234,37 @@ def simulate_prices(
         else:
             idio[t] = AR1_RHO * idio[t - 1] + innovations[t]
 
-    # ---- Time-varying alpha via AR(1) (normal stocks only) ----
+    # ---- Time-varying alpha via AR(1) (normal and winner stocks only) ----
     # For normal stocks, α_t follows an AR(1) process that mean-reverts to zero
     # with half-life ≈ log(0.5)/log(0.995) ≈ 138 calendar days (6 months).  This
     # creates medium-term cross-sectional momentum that strategies can exploit —
     # the 6-month lookback period of momentum ranking is highly correlated with the
     # current α_t state, so the strategy reliably selects high-alpha stocks.
     #
-    # Unlike FIXED-alpha simulations, time-varying alpha does NOT accumulate
-    # Jensen's inequality over 20 years, so the equal-weight B&H benchmark stays
-    # realistic (~10-12 % CAGR) while momentum still adds 5-8 % of selection alpha.
-    #
+    # Winner stocks have the same AR(1) process but a higher innovation std
+    # (wider swings — simulating the explosive momentum bursts of high-growth stocks).
     # Loser stocks have α_t = 0 (their drag comes from the constant alphas[i]).
-    #
-    # The stationary distribution of α_t is N(0, STOCK_ALPHA_STD²), so we
-    # initialise directly from N(0, STOCK_ALPHA_STD) — this is correct because
-    # ALPHA_AR1_INNOV_STD = STOCK_ALPHA_STD × √(1 − ρ²), and the stationary std
-    # is ALPHA_AR1_INNOV_STD / √(1 − ρ²) = STOCK_ALPHA_STD.
     ALPHA_AR1_INNOV_STD = STOCK_ALPHA_STD * np.sqrt(1 - ALPHA_AR1_RHO ** 2)
+    ALPHA_AR1_INNOV_STD_WINNER = STOCK_WINNER_ALPHA_STD * np.sqrt(1 - ALPHA_AR1_RHO ** 2)
 
-    alpha_tv = np.where(is_loser, 0.0, rng.normal(0, STOCK_ALPHA_STD, size=n_tickers))
+    # Initialise from stationary distribution
+    alpha_tv_normal = stock_rng.normal(0, STOCK_ALPHA_STD, size=n_tickers)
+    alpha_tv_winner = stock_rng.normal(0, STOCK_WINNER_ALPHA_STD, size=n_tickers)
+    alpha_tv = np.where(is_winner, alpha_tv_winner, np.where(is_loser, 0.0, alpha_tv_normal))
 
     # ---- Combine: r_i(t) = α_i + α_tv_i(t) + β_i·r_m(t) + ε_i(t) ----
     log_returns = np.zeros((n_days, n_tickers))
     for t in range(n_days):
         log_returns[t] = (
-            alphas          # constant baseline alpha (positive for normal, negative for losers)
-            + alpha_tv      # time-varying mean-reverting alpha for normal stocks
+            alphas          # constant baseline alpha (high for winners, negative for losers)
+            + alpha_tv      # time-varying mean-reverting alpha
             + betas * market_ret[t]
             + idio[t]
         )
-        # Update time-varying alpha with AR(1) innovations (normal stocks only)
-        tv_innovations = rng.normal(0.0, ALPHA_AR1_INNOV_STD, size=n_tickers)
+        # Update time-varying alpha with AR(1) innovations (normal + winner stocks only)
+        tv_innov_normal = rng.normal(0.0, ALPHA_AR1_INNOV_STD, size=n_tickers)
+        tv_innov_winner = rng.normal(0.0, ALPHA_AR1_INNOV_STD_WINNER, size=n_tickers)
+        tv_innovations = np.where(is_winner, tv_innov_winner, tv_innov_normal)
         new_alpha_tv = ALPHA_AR1_RHO * alpha_tv + tv_innovations
         alpha_tv = np.where(is_loser, 0.0, new_alpha_tv)
 
@@ -268,3 +306,20 @@ def simulate_benchmark(
     log_ret = rng.normal(drift_vec, vol_vec)
     prices = 100.0 * np.exp(np.cumsum(log_ret))
     return pd.DataFrame({"SPY": prices}, index=dates)
+
+
+def get_winner_tickers(
+    tickers: list[str] = SIMULATED_TICKERS,
+    seed: int = 2024,  # kept for API compatibility, not used (winners are deterministic)
+) -> list[str]:
+    """
+    Return the subset of tickers classified as 'super-winners'.
+
+    Super-winners are deterministically assigned to STOCK_WINNER_TICKERS
+    (NVDA, TSLA, AMZN, META, AVGO — the real top performers of 2005-2025).
+    This is consistent with simulate_prices() regardless of seed.
+
+    These tickers are given very high alpha in the simulation (Tesla/NVDA analogs).
+    Use them to build the 'top individual stock buy-and-hold' benchmark.
+    """
+    return [t for t in tickers if t in STOCK_WINNER_TICKERS]

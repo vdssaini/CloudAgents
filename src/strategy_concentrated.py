@@ -7,7 +7,7 @@ Goal
 ----
 Beat buy-and-hold of individual high-growth stocks (Tesla, Nvidia, etc.) by:
 1. Concentrating in the TOP 3 momentum stocks (not 10–20)
-2. Applying 1.5× leverage in BULL regimes (weights sum to 1.5)
+2. Applying 2× leverage in BULL regimes (weights sum to 2.0)
 3. Using a faster 3-month momentum signal to catch momentum breakouts early
 4. Exiting quickly via tight trailing stop (2.5×ATR) and SMA(200) filter
 
@@ -20,7 +20,7 @@ High-growth stocks like Tesla have explosive upside BUT also catastrophic crashe
 
 This strategy captures the bull-market run (momentum filter enters TSLA early)
 and exits before the crash (SMA(200) + abs-momentum filter signals exit).
-The 1.5× leverage amplifies the captured upside.  Over multiple such cycles, the
+The 2× leverage amplifies the captured upside.  Over multiple such cycles, the
 compounding advantage (avoid the -75 %, keep the +1,100 %) beats pure B&H.
 
 Mathematical edge
@@ -28,7 +28,7 @@ Mathematical edge
 Let R_bull = +1,100 %, R_bear = −75 %, over a 3-year cycle:
 
   B&H path:       100 → ×12 → ×0.25 → 300  (3× in 3 years = +44 % CAGR for this cycle)
-  Strategy path:  100 → ×(12^1.5) → ×1.0 → 4,096  (hypothetical 1.5× leverage,
+  Strategy path:  100 → ×(12^2.0) → ×1.0 → 20,736  (hypothetical 2× leverage,
                   exits at peak) → much higher end wealth
 
 In practice the strategy does not exit at the exact peak, but academic evidence
@@ -76,9 +76,9 @@ class ConcentratedMomentumConfig:
     skip_days: int = 21                  # skip most-recent month (reversal avoidance)
     top_n: int = 3                       # hyper-concentrated: top 3 momentum stocks
 
-    # Absolute momentum (Antonacci 2014) — bear-market exit
+    # Absolute momentum (Antonacci 2014) — bear-market exit (relaxed threshold)
     abs_mom_lookback: int = 252          # 12-month absolute momentum
-    abs_mom_threshold: float = 0.0       # must beat cash / zero
+    abs_mom_threshold: float = -0.05     # allow entry if stock is within 5% of flat
 
     # 52-week high proximity (George & Hwang 2004)
     high_52w_window: int = 252
@@ -103,10 +103,6 @@ class ConcentratedMomentumConfig:
     trailing_stop_atr_mult: float = 2.5  # 2.5×ATR trailing stop
     atr_window: int = 14
 
-    # Absolute momentum (Antonacci 2014) — bear-market exit (relaxed to -5%)
-    abs_mom_lookback: int = 252          # 12-month absolute momentum
-    abs_mom_threshold: float = -0.05     # allow entry if stock is within 5% of flat
-
     # Leverage — apply a scalar to target weights in BULL conditions
     # (weights may sum to > 1; the backtest engine handles borrowing via negative cash)
     # NOTE: Real-world margin borrowing costs ~4-6% p.a. — factor this in when deploying.
@@ -120,7 +116,7 @@ class ConcentratedMomentumStrategy:
     Strategy 5 — Concentrated High-Conviction Momentum with Leverage.
 
     Selects the top-3 momentum stocks from the universe and allocates up to
-    1.5× gross exposure, amplifying returns during momentum-driven bull markets
+    2× gross exposure, amplifying returns during momentum-driven bull markets
     while using absolute-momentum and SMA(200) filters to exit before crashes.
 
     This strategy is explicitly designed to beat buy-and-hold of individual
@@ -152,7 +148,7 @@ class ConcentratedMomentumStrategy:
         Returns
         -------
         pd.DataFrame
-            Same shape as *prices*.  Each row sums to ≤ leverage_bull (default 1.5).
+            Same shape as *prices*.  Each row sums to ≤ leverage_bull (default 2.0).
         """
         cfg = self.config
         min_history = max(cfg.trend_sma_window, cfg.abs_mom_lookback, cfg.high_52w_window)

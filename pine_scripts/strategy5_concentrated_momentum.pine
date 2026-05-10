@@ -9,16 +9,16 @@ strategy("Strategy 5 — Concentrated Momentum + Leverage (Beat Tesla/NVDA)", ov
 //   1. Momentum filter (3-month return, skip 1 month) — identifies stocks in
 //      strong medium-term uptrends (faster than Strategy 1's 6-month window)
 //   2. Trend filter: Close > SMA(200) — avoids structural downtrends
-//   3. Absolute momentum: 12-month return > 0% — exits bear markets
-//   4. 52-week high proximity: price within 35% of 52-week high
+//   3. Absolute momentum: 12-month return > -5% — exits bear markets
+//   4. 52-week high proximity: price within 50% of 52-week high (within 35% relaxed)
 //   5. RSI guard: RSI(14) < 85 on new entries
-//   6. 1.5x leverage via 150% position size setting — amplifies bull gains
+//   6. 2x leverage via 200% position size setting — amplifies bull gains
 //   7. 2.5x ATR trailing stop — protects leveraged gains
 //
 // Why it beats Tesla / NVDA buy-and-hold:
 //   Tesla 2019-2021: +1,100% — this strategy enters on momentum
 //   Tesla 2022:       -75%  — this strategy exits via SMA(200) / abs-momentum
-//   Net: captures most of the up, avoids most of the down, 1.5x amplifies up
+//   Net: captures most of the up, avoids most of the down, 2x amplifies up
 //
 // Best stocks to test (Daily 1D chart):
 //   TSLA, NVDA, AAPL, MSFT, AMZN, META, GOOGL
@@ -43,9 +43,9 @@ i_fast_sma = input.int(50, "Fast SMA Exit (bars)", minval=10, maxval=100, group=
 i_rel_mom_near = input.int(21, "Momentum skip (bars ≈ 1 month)", minval=5, maxval=30, group="Momentum")
 i_rel_mom_far = input.int(84, "Momentum lookback far (bars ≈ 3 months + skip)", minval=42, maxval=168, group="Momentum")
 i_abs_mom_window = input.int(252, "Absolute momentum window (bars ≈ 12 months)", minval=126, maxval=504, group="Momentum")
-i_abs_mom_threshold = input.float(0.0, "Abs momentum min return (0 = must beat zero)", minval=-0.20, maxval=0.20, step=0.01, group="Momentum")
+i_abs_mom_threshold = input.float(-0.05, "Abs momentum min return (-0.05 = within 5% of flat)", minval=-0.20, maxval=0.20, step=0.01, group="Momentum")
 i_high52w = input.int(252, "52-week high window (bars)", minval=126, maxval=504, group="52-Week High")
-i_high52w_ratio = input.float(0.65, "Min price / 52w-high ratio (0.65 = within 35%)", minval=0.30, maxval=0.95, step=0.05, group="52-Week High")
+i_high52w_ratio = input.float(0.50, "Min price / 52w-high ratio (0.50 = within 50%)", minval=0.30, maxval=0.95, step=0.05, group="52-Week High")
 i_rsi_period = input.int(14, "RSI period", minval=5, maxval=30, group="RSI Guard")
 i_rsi_max = input.float(85.0, "RSI max on new entry", minval=50.0, maxval=95.0, step=1.0, group="RSI Guard")
 i_atr_period = input.int(14, "ATR period for trailing stop", minval=5, maxval=30, group="Risk Management")
@@ -120,7 +120,7 @@ if barstate.islast
     table.cell(status_table, 0, 5, "RSI(14) < " + str.tostring(i_rsi_max), text_color=color.black)
     table.cell(status_table, 1, 5, rsi14 < i_rsi_max ? "✓ YES" : "✗ NO", text_color=rsi14 < i_rsi_max ? color.green : color.red)
     table.cell(status_table, 0, 6, "ALL SIGNALS", text_color=color.black, bgcolor=color.new(color.gray, 40))
-    table.cell(status_table, 1, 6, entry_signal ? "★ LONG (1.5×)" : "— CASH", text_color=entry_signal ? color.green : color.gray, bgcolor=color.new(color.gray, 40))
+    table.cell(status_table, 1, 6, entry_signal ? "★ LONG (2.0×)" : "— CASH", text_color=entry_signal ? color.green : color.gray, bgcolor=color.new(color.gray, 40))
 
 // ---- Background colour for position status ----
 bgcolor(strategy.position_size > 0 ? color.new(color.green, 92) : color.new(color.gray, 97), title="Position background")

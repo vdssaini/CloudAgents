@@ -10,7 +10,7 @@ Portfolios compared
 2. Strategy 2 — RSI(2) + Bollinger Band Mean Reversion  (Connors & Alvarez 2009)
 3. Strategy 3 — Low Volatility Factor  (Baker, Bradley & Wurgler 2011)
 4. Strategy 4 — Dual Momentum + 52-Week High  (Antonacci 2014 + George & Hwang 2004)
-5. Strategy 5 — Concentrated High-Conviction Momentum (top-3, 1.5× leverage)
+5. Strategy 5 — Concentrated High-Conviction Momentum (top-3, 2× leverage)
 6. Master     — Regime-Aware blend (vol-targeted): BULL→momentum, BEAR→low-vol, CHOPPY→mean-rev
 7. Benchmark  — Buy-and-hold SPY (frictionless)
 8. Avg Stock  — Equal-weight buy-and-hold of all 100 stocks in the universe
@@ -20,7 +20,7 @@ Goal of Strategy 4: Beat buy-and-hold of individual stocks by capturing upside
 while avoiding major bear-market drawdowns via absolute (time-series) momentum.
 
 Goal of Strategy 5: Beat INDIVIDUAL high-growth stocks (Tesla, NVDA analogs) by
-concentrating in the top-3 momentum winners with 1.5× leverage + tight stop-loss.
+concentrating in the top-3 momentum winners with 2× leverage + tight stop-loss.
 
 Usage
 -----
@@ -293,7 +293,7 @@ def main() -> None:
     dm_w = dm_strat.generate_weights(prices)
     logger.info("  Avg positions held: %.1f", (dm_w > 0).sum(axis=1).mean())
 
-    # 6. Strategy 5: Concentrated High-Conviction Momentum (top-3, 1.5× leverage)
+    # 6. Strategy 5: Concentrated High-Conviction Momentum (top-3, 2× leverage)
     logger.info("Running Strategy 5: Concentrated Momentum (top-3, 2× leverage) …")
     logger.info("  Goal: Beat individual high-growth stocks (Tesla/NVDA analogs)")
     cm_cfg = ConcentratedMomentumConfig()

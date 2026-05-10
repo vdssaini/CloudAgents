@@ -203,7 +203,15 @@ def simulate_prices(
     # Losers are randomly drawn from remaining non-winner stocks.
     is_winner = np.array([t in STOCK_WINNER_TICKERS for t in tickers])
     non_winner_draw = stock_rng.random(n_tickers)
-    is_loser  = (~is_winner) & (non_winner_draw < STOCK_LOSER_PROB / (1 - len(STOCK_WINNER_TICKERS) / n_tickers + 1e-9))
+    # Scale the loser probability to apply only to non-winner stocks.
+    # STOCK_LOSER_PROB (20%) is the target fraction of the full universe;
+    # dividing by the non-winner fraction keeps the total proportion correct.
+    # Example: with 5 winners in 100 stocks, non_winner_fraction = 95/100 = 0.95,
+    # so scaled_loser_prob = 0.20 / 0.95 ≈ 0.211, yielding ~20 losers from 95 non-winners.
+    n_winners = int(is_winner.sum())
+    non_winner_fraction = max(n_tickers - n_winners, 1) / n_tickers
+    scaled_loser_prob = min(STOCK_LOSER_PROB / non_winner_fraction, 1.0)
+    is_loser = (~is_winner) & (non_winner_draw < scaled_loser_prob)
 
     betas_normal = stock_rng.uniform(STOCK_BETA_LOW, STOCK_BETA_HIGH, size=n_tickers)
     betas_winner = stock_rng.uniform(STOCK_WINNER_BETA_LOW, STOCK_WINNER_BETA_HIGH, size=n_tickers)
@@ -310,7 +318,7 @@ def simulate_benchmark(
 
 def get_winner_tickers(
     tickers: list[str] = SIMULATED_TICKERS,
-    seed: int = 2024,  # kept for API compatibility, not used (winners are deterministic)
+    seed: int = 2024,  # kept for API compatibility; ignored (winners are deterministic)
 ) -> list[str]:
     """
     Return the subset of tickers classified as 'super-winners'.
@@ -318,6 +326,13 @@ def get_winner_tickers(
     Super-winners are deterministically assigned to STOCK_WINNER_TICKERS
     (NVDA, TSLA, AMZN, META, AVGO — the real top performers of 2005-2025).
     This is consistent with simulate_prices() regardless of seed.
+
+    Note
+    ----
+    The ``seed`` parameter is accepted for API compatibility but is **not used**.
+    Winner classification is always the same regardless of the seed value because
+    it is based on the fixed ``STOCK_WINNER_TICKERS`` set, not random draws.
+    Callers do not need to match the seed used in simulate_prices().
 
     These tickers are given very high alpha in the simulation (Tesla/NVDA analogs).
     Use them to build the 'top individual stock buy-and-hold' benchmark.

@@ -490,14 +490,12 @@ for 30% of the time means missing +900% of gains — that's why previous version
 
 | Period | TSLA B&H | Strategy 6 (Always-In) |
 |--------|----------|------------------------|
-| 2019–2021 bull (+3,000%) | +3,000% | +3,000% (long the whole time — same) |
-| 2022 crash (−75%) | −75% (holds through) | **+75%** (SHORT the crash, earns while B&H bleeds) |
-| 2023–24 recovery (+150%) | +150% (recovering from a deep hole) | +150% (long again from a higher base) |
-| **Net result** | ~large loss after crash | **Long gains + Short gains > B&H** |
+| 2019–2021 bull (+3,000%) | +3,000% (holds) | +3,000% (long the whole time — same) |
+| 2022 crash (−75%) | −75% (holds through — portfolio drops to 25% of peak) | **+75% profit** (SHORT the crash — portfolio grows 1.75× while B&H drops to 0.25×) |
+| 2023–24 recovery (+150%) | +150% (recovering from a deep hole) | +150% (long again from a much higher base) |
+| **Net result (illustrative)** | ~+1,840% (the crash wipes most gains; B&H ends at ~19× start) | **~+13,500%** (crash converted to profit; strategy ends at ~136× start) |
 
-Converting a −75% loss into a +75% gain is a **150% swing** per crash cycle. After
-three bear markets in 20 years, this compounding difference makes the strategy's
-terminal wealth substantially larger than buy-and-hold — without any leverage.
+The key math: when TSLA drops −75%, a long holder's portfolio falls to 25% of its prior value, then needs +300% just to break even. A short holder's portfolio grows by 75% over that same period. The Always-In strategy captures both the bull-phase gains AND profits from the bear phase — without any leverage.
 
 ### How the trend switch works
 

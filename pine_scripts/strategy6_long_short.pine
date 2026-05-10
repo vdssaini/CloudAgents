@@ -62,7 +62,7 @@ short_enabled = input.bool(true, "Enable Short Leg (uncheck for long-only trend 
 sma200 = ta.sma(close, sma_len)
 atr14 = ta.atr(atr_len)
 rsi14 = ta.rsi(close, 14)
-ret_12m = bar_index >= 252 ? (close - close[252]) / close[252] * 100 : na
+ret_12m = bar_index >= 252 ? (close - close[252]) / close[252] * 100 : na  // display-only: shown in dashboard; not used in trend switch logic
 
 // ─── Trend Zone Detection (buffer prevents whipsaw at SMA200 line) ─────────
 // The buffer zone is the critical innovation: without it, TSLA's volatile moves

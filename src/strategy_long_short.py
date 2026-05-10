@@ -12,13 +12,6 @@ leverage borrowing**, by running a classic 130/30 long/short equity portfolio:
   • 30%  short — bottom-M momentum losers below SMA(200) with negative 12-month alpha
   • Net exposure: 100%  (no cash borrowing; the short-sale proceeds fund the extra longs)
 
-Why 130/30 beats Tesla buy-and-hold without leverage
-------------------------------------------------------
-1. **Funded extra long exposure**: Short selling $0.30 of loser stocks raises $0.30 in cash
-   that is reinvested into more long positions.  A 100% long fund has $1.00 in longs; the
-   130/30 has $1.30 — 30% more upside exposure to quality momentum winners, including
-   Tesla/NVDA when they are in momentum regime, WITHOUT borrowing a single extra dollar.
-
 2. **Short-side alpha**: Momentum losers below SMA(200) with negative 12-month returns
    continue to underperform.  Academic evidence shows the short leg contributes 4–8% p.a.
    additional alpha over a cycle (Jegadeesh & Titman 2001 long/short vs long-only).
@@ -139,7 +132,10 @@ class LongShortConfig:
     rsi_window: int = 14
     atr_window: int = 14
 
-    # Hybrid weighting boost (z-score shift to keep all weights positive before normalisation)
+    # Hybrid weighting: z-scores can be negative, so we shift all scores up by this
+    # constant before multiplying with inverse-vol.  A shift of 1.5 ensures that even
+    # stocks at z = -1.0 still receive 1/3 the weight of stocks at z = +1.5, preventing
+    # zero/negative weights while preserving the rank ordering of momentum signal strength.
     mom_weight_boost: float = 1.5
 
     # ------------------------------------------------------------------ #
@@ -207,9 +203,10 @@ class LongShortMomentumStrategy:
         ).std()
         atr_vals  = atr(prices, cfg.atr_window)
 
-        # Trailing stop trackers
-        peak_price   = prices.copy() * np.nan   # for long trailing stop
-        trough_price = prices.copy() * np.nan   # for short trailing stop
+        # Trailing stop trackers — use dicts to store only active positions'
+        # peak (long) and trough (short) prices; avoids allocating two full DataFrames.
+        peak_price:   dict[str, float] = {}   # ticker → peak since long entry
+        trough_price: dict[str, float] = {}   # ticker → trough since short entry
 
         weights          = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
         current_weights  = pd.Series(0.0, index=prices.columns)
@@ -232,32 +229,25 @@ class LongShortMomentumStrategy:
             # Intra-bar trailing stops (every bar — faster exit than monthly)
             # ----------------------------------------------------------
             for ticker in prices.columns:
-                col_idx = prices.columns.get_loc(ticker)
                 w = current_weights[ticker]
                 cur_p = row_prices[ticker]
                 atr_v = row_atr[ticker] if not np.isnan(row_atr[ticker]) else 0.0
 
                 if w > 0:   # long position — trailing stop below peak
-                    prev_peak = peak_price.iat[i - 1, col_idx] if i > 0 else cur_p
-                    cur_peak  = max(
-                        prev_peak if not np.isnan(prev_peak) else cur_p,
-                        cur_p,
-                    )
-                    peak_price.iat[i, col_idx] = cur_peak
+                    cur_peak = max(peak_price.get(ticker, cur_p), cur_p)
+                    peak_price[ticker] = cur_peak
                     stop = cur_peak - cfg.long_trailing_stop_mult * atr_v
                     if cur_p < stop:
                         current_weights[ticker] = 0.0
+                        del peak_price[ticker]
 
                 elif w < 0:  # short position — trailing stop above trough
-                    prev_trough = trough_price.iat[i - 1, col_idx] if i > 0 else cur_p
-                    cur_trough  = min(
-                        prev_trough if not np.isnan(prev_trough) else cur_p,
-                        cur_p,
-                    )
-                    trough_price.iat[i, col_idx] = cur_trough
+                    cur_trough = min(trough_price.get(ticker, cur_p), cur_p)
+                    trough_price[ticker] = cur_trough
                     stop = cur_trough + cfg.short_trailing_stop_mult * atr_v
                     if cur_p > stop:
                         current_weights[ticker] = 0.0   # cover the short
+                        del trough_price[ticker]
 
             # ----------------------------------------------------------
             # Monthly rebalance
@@ -269,13 +259,18 @@ class LongShortMomentumStrategy:
                 )
                 # Reset peak/trough trackers for new entries
                 for ticker in prices.columns:
-                    col_idx = prices.columns.get_loc(ticker)
                     if new_weights[ticker] > 0 and current_weights[ticker] <= 0:
                         # New long entry — initialise peak
-                        peak_price.iat[i, col_idx] = row_prices[ticker]
+                        peak_price[ticker] = row_prices[ticker]
+                        trough_price.pop(ticker, None)
                     elif new_weights[ticker] < 0 and current_weights[ticker] >= 0:
                         # New short entry — initialise trough
-                        trough_price.iat[i, col_idx] = row_prices[ticker]
+                        trough_price[ticker] = row_prices[ticker]
+                        peak_price.pop(ticker, None)
+                    elif new_weights[ticker] == 0:
+                        # Position closed at rebalance — clean up trackers
+                        peak_price.pop(ticker, None)
+                        trough_price.pop(ticker, None)
 
                 current_weights = new_weights
 

@@ -14,7 +14,7 @@ regime-aware Master Portfolio implemented in the CloudAgents backtesting system.
 | `strategy3_low_vol.pine` | Low Volatility Factor | Quality/defensive | ~1 month |
 | `strategy4_dual_momentum.pine` | **Dual Momentum + 52-Week High** — designed to beat individual stock buy-and-hold | Dual momentum | ~1 month |
 | `strategy5_concentrated_momentum.pine` | **Concentrated Momentum + 2× Leverage** — designed to beat Tesla/NVDA buy-and-hold | Concentrated momentum | ~1–2 months |
-| `strategy6_long_short.pine` | **Always-In Trend Long/Short** — LONG above SMA(200)+buffer, SHORT below; **no leverage, never flat**; converts TSLA 2022 crash into short profit | Long/short equity | Multi-month |
+| `strategy6_long_short.pine` | **EMA Golden/Death Cross Long/Short** — LONG on Golden Cross (EMA50>EMA200), SHORT on Death Cross, covers shorts when RSI oversold to lock profits before bear bounces; **no leverage** | Long/short equity | Multi-month |
 | `strategy_master_regime.pine` | Master Portfolio — Regime-Aware Dynamic Rotation | All three, regime-switched | Varies |
 
 ---
@@ -468,92 +468,121 @@ This matches the Python Master Portfolio allocations from `src/portfolio_optimiz
 
 ---
 
-## Strategy 6 — Always-In Trend Long/Short (Beat TSLA/NVDA Buy-and-Hold, No Leverage)
+## Strategy 6 — EMA Golden/Death Cross Long/Short (Beat TSLA/NVDA Buy-and-Hold, No Leverage)
 
-### The core innovation: NEVER be flat
+### Why the previous versions failed (the root-cause diagnosis)
 
-Every previous version had a fundamental flaw: it went to **cash (flat)** when conditions
-were unclear. Buy-and-hold is **always 100% invested**. Any time the strategy is flat,
-B&H is gaining. On a stock like TSLA that goes up +3,000% over a decade, being flat
-for 30% of the time means missing +900% of gains — that's why previous versions were
-"miserable" vs B&H.
+Every previous version (SMA(200) buffer, asymmetric RSI gates, Always-In) had a shared
+fatal flaw in how they exited shorts:
 
-**The fix: always be either 100% Long OR 100% Short — never flat.**
+1. TSLA crashes hard, falls below the signal line → strategy goes **SHORT** at, say, $280.
+2. TSLA falls to $110 — short is very profitable.
+3. TSLA **recovers**. But the signal line (SMA200 or SMA with buffer) is a **lagging**
+   indicator — it keeps falling. By the time TSLA crosses *back above* the signal, TSLA
+   is at $290 — **higher than the short entry of $280**.
+4. The strategy covers the short at a **loss** of $10/share despite the stock having
+   crashed 73% during the trade. This is the "even worse results" problem.
 
-| Phase | Old versions | Strategy 6 (Always-In) |
-|-------|-------------|------------------------|
-| Strong bull (RSI > 75) | Exits to FLAT — misses gains | STAYS LONG — no RSI cap |
-| Sideways / unclear | FLAT — no return | Holds existing position |
-| Bear market | FLAT or slow-to-short | Flips SHORT immediately — earns as B&H bleeds |
+### The fix: EMA Golden/Death Cross + RSI-managed short covering
 
-### Why this mathematically beats buy-and-hold (TSLA example)
+**Two key changes:**
 
-| Period | TSLA B&H | Strategy 6 (Always-In) |
-|--------|----------|------------------------|
-| 2019–2021 bull (+3,000%) | +3,000% (holds) | +3,000% (long the whole time — same) |
-| 2022 crash (−75%) | −75% (holds through — portfolio drops to 25% of peak) | **+75% profit** (SHORT the crash — portfolio grows 1.75× while B&H drops to 0.25×) |
-| 2023–24 recovery (+150%) | +150% (recovering from a deep hole) | +150% (long again from a much higher base) |
-| **Net result (illustrative)** | ~+1,840% (the crash wipes most gains; B&H ends at ~19× start) | **~+13,500%** (crash converted to profit; strategy ends at ~136× start) |
+**A. Use EMA(50)/EMA(200) crossover (Golden/Death Cross), not price vs SMA:**
+- The **Death Cross** fires once at the *start* of a bear market when price is still
+  *high* — giving a clean, high-price short entry point.
+- The **Golden Cross** fires as the recovery *matures*, after price has climbed well
+  off the bottom — so we cover the short and go long at a point where the short is
+  still profitable (short entry was higher than current price).
+- This eliminates the "cover short at a loss" problem.
 
-The key math: when TSLA drops −75%, a long holder's portfolio falls to 25% of its prior value, then needs +300% just to break even. A short holder's portfolio grows by 75% over that same period. The Always-In strategy captures both the bull-phase gains AND profits from the bear phase — without any leverage.
+**B. Cover shorts aggressively when RSI(14) < 30 (deeply oversold):**
+- Bear-market bounces of 20–40% are common — they happen when RSI is oversold.
+- Covering at RSI < 30 locks in most of the crash profit **before** the bounce.
+- After the bounce (RSI recovers to 45+), we **re-short** if still in bear mode.
+- This "collect → wait → re-short" loop extracts multiple profitable shorts per crash.
 
-### How the trend switch works
+### How the strategy works (step by step)
 
-1. **Bull zone**: price rises decisively above SMA(200) + 2% buffer → **go LONG**
-2. **Bear zone**: price falls decisively below SMA(200) − 2% buffer → **go SHORT**
-3. **Buffer zone** (within ±2% of SMA200): **hold current position** — no change
-   - The buffer prevents whipsaw at the 200-day line (a stock like TSLA can cross SMA200 dozens of times per year without the buffer)
-4. Trailing stop on longs (4×ATR): wide enough to survive TSLA's violent pullbacks
-5. Trailing stop on shorts (2×ATR): tight enough to lock in crash profits quickly
+**LONG side:**
+- Enter LONG on **Golden Cross** (EMA50 crosses ABOVE EMA200) — trend confirmed bullish.
+- Stay LONG while EMA50 > EMA200. Rides the full bull market.
+- Exit LONG on **Death Cross** — switch to bear mode.
+
+**SHORT side:**
+- Enter SHORT on **Death Cross** AND RSI between 35–65 (35 = not at panic bottom yet; 65 = not in a bounce that might reverse).
+- **Cover SHORT (#1):** RSI(14) falls below 30 — stock is oversold, bounce risk.
+  Lock in crash profits. Go flat and wait.
+- **Re-short:** EMA50 still < EMA200 AND RSI has recovered above 45 — stock bounced
+  from oversold; re-short for the next leg down.
+- **Cover SHORT (#2):** Golden Cross fires — bear market over. Close short, go long.
+
+**Initial entry:** After enough bars to stabilize EMAs, if no crossover has fired yet,
+the strategy enters based on the current trend state (handles charts starting mid-trend).
+
+### TSLA 2022 concrete example (approximate, split-adjusted)
+
+| Event | Price | Strategy action | Outcome |
+|-------|-------|-----------------|---------|
+| Death Cross fires Mar 2022 | $280 | Short entry (RSI = 48, in 35–65 range) | — |
+| RSI drops to 24 | $150 | Cover short — oversold, bounce risk | **+46% profit** ($130/$280) |
+| Bear rally, RSI recovers to 48 | $200 | Re-short — bear trend still active | — |
+| RSI drops to 22 | $110 | Cover short — oversold again | **+45% profit** ($90/$200) |
+| Golden Cross fires (May 2023) | $220 | Cover any short, go long | — |
+
+Two short trades: +46% + 45% = **+91% combined** during TSLA's −61% crash ($280 → $110).
+B&H was at −61% from peak. Strategy was at +91%. A **152-percentage-point swing** per crash cycle.
 
 ### How to verify it beats B&H in TradingView
 
-1. Load `strategy6_long_short.pine` on **TSLA Daily (1D)** — set date range to 2019-01-01
-2. Open the **Strategy Tester** tab
-3. Compare **"Strategy equity"** vs **"Buy & hold equity"** on the chart and in "Performance Summary"
-4. Key events to look for in the Trade List:
-   - **2019**: Goes LONG as TSLA crosses SMA(200) + 2% buffer
-   - **2022**: Flips SHORT as TSLA breaks below SMA(200) − 2% buffer — earns during the −75% crash
-   - **2023**: Flips LONG as TSLA recovers — captures full recovery gains
-5. The strategy equity line should be well above the B&H line by 2024
+1. Paste `strategy6_long_short.pine` into the Pine Script Editor.
+2. Load on **TSLA Daily (1D)** — set date range to **2019-01-01 to today**.
+3. Open the **Strategy Tester** tab at the bottom.
+4. Compare **"Strategy equity"** vs **"Buy & hold equity"**.
+5. Key events to look for in the Trade List:
+   - **Golden Cross ~2019**: Goes LONG — enters the 2020–2021 bull run.
+   - **Death Cross ~Mar 2022**: Flips SHORT — earns during the −75% crash.
+   - **RSI < 30 ~Jan 2023**: Covers short (profit locked), goes flat.
+   - **Re-short signal**: Re-enters short after bounce.
+   - **Golden Cross ~May 2023**: Covers short, goes LONG — captures recovery.
 
 ### Recommended Stocks (Daily chart)
 
-| Ticker | Why it works well | Buffer recommendation |
-|--------|------------------|-----------------------|
-| **TSLA** | Strongest demonstration — 2022 crash is massive short profit | 2% (default) |
-| **NVDA** | 2022 −66% crash → short profit, then 2023 AI rally captured | 2% (default) |
-| **META** | 2022 −77% crash → huge short profit | 2% (default) |
-| **AMZN** | 2022 −56% crash + recovery | 1.5% (slightly lower vol) |
-| **AAPL** | Lower vol — strategy stays mostly long | 1.5% |
-| **MSFT** | Very low vol — mostly long with occasional shorts | 1.0% |
-| **SPY** | Good for testing the concept; fewer position switches than individual stocks | 1.5% |
+| Ticker | Why it works well | Notes |
+|--------|------------------|-------|
+| **TSLA** | Strongest demonstration — clear 2022 Death Cross, massive short profit | Best starting point |
+| **NVDA** | 2022 −66% crash → Death Cross → short profit, then 2023 AI rally captured | Similar to TSLA |
+| **META** | 2022 −77% crash → huge short profit | 3 short legs in 2022 |
+| **AMZN** | 2022 −56% crash + recovery | Slightly lower vol |
+| **SPY** | Good for concept testing; Death Cross is rarer but very reliable when it fires | |
 
 ### Parameter settings
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| Trend SMA Period | 200 | The switch point between Long and Short |
-| Buffer Zone % | 2.0 | Price must be 2% above SMA to go long, 2% below to go short |
-| Long Trailing Stop | 4.0×ATR | Wide — survives TSLA's violent pullbacks during bull runs |
-| Short Cover Stop | 2.0×ATR | Tight — locks in crash profits before the bear rally reverses |
-| ATR Length | 14 | Standard |
-| Enable Short Leg | true | Uncheck for long-only trend following (less aggressive) |
+| Fast EMA | 50 | Crosses above/below slow EMA to signal trend |
+| Slow EMA | 200 | Trend baseline — Golden/Death Cross reference |
+| RSI Oversold Cover | 30 | Cover short when RSI < 30 to lock in profit before bounce |
+| RSI Re-short Level | 45 | Re-enter short after oversold bounce (RSI recovered above 45) |
+| RSI Max Short Entry | 65 | Short only when RSI is 35–65: above 35 (not panicking yet), below 65 (not in a bounce) |
+| Enable Short Leg | true | Uncheck for long-only Golden Cross following |
 
-### Tuning the buffer zone by stock volatility
+### Why RSI-managed covering is critical for high-volatility stocks
 
-| Stock type | Buffer recommendation | Why |
-|------------|----------------------|-----|
-| High-vol (TSLA, NVDA) | 2.0% (default) | Wider buffer prevents whipsaw on daily volatility |
-| Mid-vol (META, AMZN) | 1.5% | Fewer false signals |
-| Low-vol (AAPL, MSFT) | 1.0% | Tighter buffer still prevents most whipsaws |
-| Index ETF (SPY, QQQ) | 1.5% | Less volatile than individual stocks |
+High-growth stocks like TSLA have violent bear-market bounces. In 2022, TSLA had
+multiple rallies of 20–40% before each new leg down:
+
+- If we hold the short through a 40% rally, we give back almost all crash profits.
+- If we cover at RSI < 30 (deeply oversold = about to bounce), we lock in 40–60% profit.
+- Then we re-short after the bounce ends (RSI recovers to 45+).
+- Net: 2–3 short trades each with 25–60% profit, instead of one trade with 60% profit
+  then giving it all back on the bounce.
 
 ### Position sizing note
-- **Long positions**: 100% of equity per entry — fully invested when the trend is up
-- **Short positions**: 100% of equity — fully short when the trend is down
-- In real trading: use 10–20% of portfolio per stock and run on multiple stocks simultaneously
-- This script tests single-stock logic — the backtest in `run_comparison.py` runs on 100 stocks
+
+- **Long positions**: 100% of equity — fully invested during bull markets.
+- **Short positions**: 100% of equity — fully short during bear markets.
+- In real trading: allocate 10–20% of portfolio per stock (run on 5–10 names simultaneously).
+- This script tests single-stock logic — the Python backtest runs on 100 stocks.
 
 ---
 

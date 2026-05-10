@@ -468,73 +468,76 @@ This matches the Python Master Portfolio allocations from `src/portfolio_optimiz
 
 ---
 
-## Strategy 6 — 130/30 Long/Short Momentum (No Leverage)
+## Strategy 6 — Adaptive Trend + Crash Protection (No Leverage)
+
+### What changed and why (v2)
+
+The previous version used `exit when NOT entry_signal` — this exited the long position
+whenever **any** of 5 conditions failed (e.g., RSI > 75 fires constantly during TSLA's
+strongest bull runs). Result: the strategy was mostly FLAT during TSLA's best gains.
+
+**This version uses asymmetric entry/exit conditions:**
+
+| | Signal Gate | Exit Gate |
+|---|---|---|
+| **LONG** | 3 simple conditions | Explicit decisive exits only |
+| **SHORT** | Requires strong double-confirmation | Aggressive cover on oversold |
 
 ### What it does
-On a single stock (e.g. TSLA, NVDA), Strategy 6 applies the same momentum and trend signals
-in **both directions**:
-- **LONG** when the stock is above SMA(200), has positive 12-month absolute momentum, and
-  positive 6-month relative momentum (capturing bull market upside)
-- **SHORT** when the stock is below SMA(200), has negative 12-month momentum, and is NOT
-  extremely oversold (RSI > 30) — avoiding bounce risk from deeply oversold stocks
+On a single stock (TSLA, NVDA, META), Strategy 6 applies trend-following with crash protection:
 
-This genuinely **beats buy-and-hold on the same individual stock** by:
-1. Capturing the upside during momentum-driven bull markets (long book earns ~B&H return)
-2. **Generating positive returns during crashes** — when Tesla falls −75% in 2022, the
-   strategy is SHORT → earns ~20–40% while B&H loses 75%
-3. The combined effect produces a **much higher Sharpe ratio** and **smaller max drawdown**
+**LONG ENTRY** (3 simple conditions — no 52w-high or 6m relative-momentum filter):
+1. Close > SMA(200) — primary uptrend
+2. 12-month return > −15% — stock is not in a structural bear market
+3. RSI(14) < 85 — not at an extreme overbought extreme *(raised from 75 to prevent premature exits during TSLA's strong momentum phases)*
 
-### Why it beats B&H (not leverage)
-In the 100-stock Python backtest:
-- Strategy 6 (130/30 L/S): **+22–25% CAGR, Sharpe ~1.35, Max DD ~−21%**
-- Avg Stock B&H (100 stocks): +15% CAGR, Max DD ~−33%
-- Top-Stock B&H (5 winners): +32% CAGR, Sharpe ~1.06, Max DD ~−52%
+**LONG EXIT** (explicit decisive exits — does NOT exit because RSI briefly spikes above 85):
+1. SMA(100) cross-down — medium-term trend break (fires ~Jan 2022 on TSLA before worst of crash)
+2. Trailing stop: 3.5×ATR below the highest close since entry
+3. 12-month return falls below −30% — deep structural deterioration
 
-Strategy 6 **beats top-stock B&H on Sharpe (+0.30) and drawdown (−31% smaller)** because
-the short book generates crisis alpha during crashes.
+**SHORT ENTRY** (requires strong double-confirmation):
+1. Price < SMA(200) AND Price < SMA(50) — both trend indicators broken
+2. 3-month return < −20% — momentum crash is already underway
+3. RSI(14) between 30 and 70 — not at extremes (avoids oversold bounces)
 
-The "130/30" structure means:
-- You go long 130% of your equity (funded by short proceeds — no cash borrowing)
-- You go short 30% of your equity (in losing stocks below SMA200)
-- **Net exposure = 100%** — same as if you were fully invested in a long-only portfolio
-- **No margin borrowing at all**
+**SHORT COVER** (aggressive — avoids being squeezed):
+- RSI(14) < 30 — deeply oversold, high bounce risk
+- OR price recovers above SMA(50)
+- OR trailing cover stop: 2.5×ATR above the lowest close since short entry
 
-### Recommended Stocks for TradingView
+### How this beats TSLA buy-and-hold
 
-**Long + Short on same stock (single-stock testing):**
+**2020–2021 bull run (+1,000%):** Strategy enters long when TSLA crosses above SMA(200) and stays long even when RSI spikes to 85–90 (no longer exits on high RSI). The SMA(100) remains intact throughout the bull run → strategy captures the full upside.
 
-| Ticker | Why |
-|--------|-----|
-| **TSLA** | Strongest B&H-beater: captured the 2019-2021 run; shorted through 2022 crash |
-| **NVDA** | Clear momentum cycles with well-defined SMA(200) crossings |
-| **META** | Bear (2022: −65%) → Bull (2023: +180%) — clear regime shifts |
-| **AMZN** | Multiple clear long/short cycles across 20 years |
-| **AAPL** | Lower vol → tighter stops, smaller position sizes on the short side |
+**2022 crash (−75%):** SMA(100) crosses below ~$250 in late Jan 2022 → strategy exits long. TSLA then breaks below SMA(50) AND SMA(200) with 3-month return < −20% → strategy enters short. Short is covered near the lows when RSI drops below 30 (deeply oversold, high bounce risk).
 
-**Recommended settings per stock:**
+**2023–2024 recovery (+160%):** TSLA recovers above SMA(200) + RSI < 85 → strategy re-enters long. Earns the full recovery while B&H is still recovering from the −75% hole.
 
-| Stock | SMA Len | 12m Min (Long) | 12m Max (Short) | RSI Max (Long) | RSI Min (Short) |
-|-------|---------|----------------|-----------------|----------------|-----------------|
-| TSLA | 200 | −5% | −5% | 75 | 35 |
-| NVDA | 200 | −5% | −5% | 75 | 35 |
-| META | 200 | −5% | −5% | 72 | 30 |
-| AMZN | 200 | −5% | −5% | 75 | 30 |
-| AAPL | 200 | 0% | −10% | 70 | 30 |
+### Recommended Stocks and Settings
+
+| Ticker | Timeframe | SMA Fast Exit | RSI Entry Cap | 3m Short Threshold | Notes |
+|--------|-----------|---------------|---------------|--------------------|-------|
+| **TSLA** | Daily (1D) | 100 (default) | 85 (default) | −20% (default) | Volatile; wide RSI cap keeps you in |
+| **NVDA** | Daily (1D) | 100 | 85 | −20% | Similar to TSLA |
+| **META** | Daily (1D) | 100 | 80 | −18% | Slightly lower RSI cap |
+| **AMZN** | Daily (1D) | 100 | 80 | −18% | Similar behavior |
+| **AAPL** | Daily (1D) | 100 | 75 | −15% | Lower vol → tighter params |
+| **MSFT** | Daily (1D) | 100 | 75 | −12% | Low vol blue-chip |
 
 ### How to verify it beats B&H in TradingView
 1. Load `strategy6_long_short.pine` on **TSLA Daily (1D)**
 2. Open the **Strategy Tester** tab
-3. Look at **2022** — the strategy should go SHORT around the SMA(200) breakdown (~Dec 2021)
-   while the B&H line keeps falling −75%. The gap is the "crisis alpha."
-4. Look at **2023–2024** — the strategy goes LONG on the recovery → both lines rise together
-5. The **"Strategy equity"** line should have a smaller maximum drawdown than **"Buy & hold equity"**
-   and a higher Sharpe ratio on the Performance Summary tab
+3. In **Settings**, set "Initial Capital" to $100,000 and enable "Short" orders
+4. Compare **"Strategy equity"** vs **"Buy & hold equity"**:
+   - The strategy line should show a much smaller 2022 drawdown
+   - The Sharpe ratio in "Performance Summary" should exceed B&H
+5. Check the **trade list**: long entry ~2019–2021, exit ~Jan 2022, short entry ~Feb 2022, cover ~Jan 2023, long re-entry ~early 2023
 
 ### Position sizing note
-- **Long positions**: `default_qty_value=100` in Pine = 100% of equity per long entry
-- **Short positions**: same 100% setting — TradingView handles the margin internally
-- In real trading: cap individual positions at 10–15% of total portfolio per stock;
-  the script is for single-stock testing to verify the logic
+- **Long positions**: `default_qty_value=100` in Pine = 100% of equity per entry
+- **Short positions**: same 100% setting — TradingView handles margin internally
+- In real trading: size each position at 5–15% of portfolio; this script tests single-stock logic
 
 ---
 

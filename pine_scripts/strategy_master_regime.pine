@@ -1,0 +1,233 @@
+// Master Portfolio — Regime-Aware Dynamic Strategy Rotation
+// Pine Script v5 | TradingView Strategy
+// Port of src/regime_detector.py + src/portfolio_optimizer.py from the CloudAgents backtesting system.
+// Academic basis: Hamilton (1989) Markov regime switching; Ang & Timmermann (2012) regime-aware allocation;
+//                 Moreira & Muir (2017) volatility-managed portfolios; Faber (2007) trend filter
+// Recommended: Daily (1D) chart. Apply to any large-cap US stock or ETF (SPY, QQQ, AAPL, MSFT, JNJ, etc.)
+//
+// HOW IT WORKS — 3 regimes, 3 strategies:
+//   Step 1. Classify each bar into a regime using SMA(200) + 20-day annualised vol vs 20% threshold:
+//     BULL   : Close > SMA(200) AND 20-day ann. vol < 20%  → favour momentum (trend following)
+//     BEAR   : Close < SMA(200) AND 20-day ann. vol >= 20% → favour low-vol (capital preservation)
+//     CHOPPY : All other cases (mixed signals)              → favour mean reversion (RSI2 + BB)
+//   Step 2. Apply the dominant strategy's entry/exit logic for that regime:
+//     BULL   → Strategy 1 (Momentum+Trend): momentum>0, RSI(14)<75, trailing stop 3xATR
+//     BEAR   → Strategy 3 (Low-Vol): ann.vol < 28%, vol spike exit at 2.5x
+//     CHOPPY → Strategy 2 (Mean-Rev): RSI(2)<20, Bollinger %B<0.25, 5-day weakness
+//   Step 3. Regime-switching means exits are forced when the regime changes mid-position.
+//
+// This is a single-security implementation. The regime detection uses this chart's own price
+// series (or a manually-entered SPY price level via input). For full cross-asset regime detection
+// load SPY on your chart and run the script there to determine the current regime, then apply
+// the appropriate individual strategy scripts on the specific stocks you want to trade.
+
+//@version=5
+strategy(title="Master Portfolio — Regime-Aware (CloudAgents)", shorttitle="MASTER-REGIME", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, initial_capital=100000, commission_type=strategy.commission.percent, commission_value=0.10, slippage=5)
+
+// ── Inputs — Regime Detection ─────────────────────────────────────────────────
+i_sma_window = input.int(200, "Trend SMA window", minval=50, group="Regime Detection", tooltip="Python: RegimeDetector sma_window=200")
+i_regime_vol_window = input.int(20, "Regime vol window (days)", minval=5, group="Regime Detection", tooltip="Python: RegimeDetector vol_window=20")
+i_high_vol_threshold = input.float(20.0, "High-vol threshold % (ann.)", minval=5, maxval=60, step=1, group="Regime Detection", tooltip="Python: high_vol_ann_threshold=0.20. BULL when vol<this AND above SMA; BEAR when vol>=this AND below SMA; CHOPPY otherwise.")
+
+// ── Inputs — Strategy 1 (Momentum, used in BULL regime) ───────────────────────
+i_mom_lookback = input.int(126, "Momentum lookback (days)", minval=20, group="BULL: Momentum", tooltip="Python: 6-month momentum. 126 trading days = ~6 months")
+i_mom_skip = input.int(21, "Skip recent N days", minval=0, group="BULL: Momentum", tooltip="Python: skip 21 days to avoid short-term reversal")
+i_rsi14_window = input.int(14, "RSI(14) window", minval=2, group="BULL: Momentum")
+i_rsi14_max = input.float(75.0, "RSI(14) entry max", minval=50, maxval=100, group="BULL: Momentum", tooltip="Python: no entry if RSI(14) >= 75")
+i_atr_window = input.int(14, "ATR window (trailing stop)", minval=2, group="BULL: Momentum")
+i_atr_mult = input.float(3.0, "ATR trailing stop mult", minval=0.5, step=0.5, group="BULL: Momentum", tooltip="Python: exit if price < peak - 3*ATR")
+i_mom_rebalance = input.int(21, "Momentum rebalance (bars)", minval=1, group="BULL: Momentum")
+
+// ── Inputs — Strategy 2 (Mean Reversion, used in CHOPPY regime) ────────────────
+i_bb_window = input.int(20, "Bollinger Band window", minval=5, group="CHOPPY: Mean Reversion")
+i_bb_mult = input.float(2.0, "Bollinger Band std mult", minval=0.5, step=0.5, group="CHOPPY: Mean Reversion")
+i_bb_entry_pct_b = input.float(0.25, "BB %B entry threshold", minval=0.0, maxval=0.5, group="CHOPPY: Mean Reversion", tooltip="Python: 0.25. Enter when %B < this")
+i_bb_exit_pct_b = input.float(0.75, "BB %B exit threshold", minval=0.5, maxval=1.0, group="CHOPPY: Mean Reversion", tooltip="Python: 0.75. Exit when %B > this")
+i_rsi2_entry = input.float(20.0, "RSI(2) entry threshold", minval=1, maxval=50, group="CHOPPY: Mean Reversion", tooltip="Python: 20. Enter when RSI(2) < this")
+i_rsi2_exit = input.float(60.0, "RSI(2) exit threshold", minval=50, maxval=99, group="CHOPPY: Mean Reversion", tooltip="Python: 60. Exit when RSI(2) > this")
+i_fiveday_thr = input.float(-2.0, "5-day return threshold (%)", minval=-10, maxval=0, step=0.5, group="CHOPPY: Mean Reversion", tooltip="Proxy for cross-sectional z < -1. Default -2%. Use -3% for NVDA/TSLA, -1.5% for JNJ/PG")
+i_time_stop = input.int(5, "Time stop (bars)", minval=1, group="CHOPPY: Mean Reversion", tooltip="Python: exit after 5 bars max")
+i_hard_stop_pct = input.float(7.0, "Hard stop-loss (%)", minval=1, maxval=20, group="CHOPPY: Mean Reversion")
+i_mr_scan = input.int(5, "Mean-rev scan every N bars", minval=1, group="CHOPPY: Mean Reversion")
+
+// ── Inputs — Strategy 3 (Low-Vol, used in BEAR regime) ────────────────────────
+i_min_vol_ann = input.float(5.0, "Min ann. vol % (activity filter)", minval=0.5, maxval=20, step=0.5, group="BEAR: Low Volatility", tooltip="Python: min_vol_annual=0.05")
+i_max_vol_ann = input.float(28.0, "Max ann. vol % (low-vol entry)", minval=5, maxval=80, step=1, group="BEAR: Low Volatility", tooltip="Python: top-quintile selection proxy. 28% for normal large-caps; lower=more selective")
+i_vol_exit_mult = input.float(2.5, "Vol spike exit multiplier", minval=1.0, maxval=5.0, step=0.5, group="BEAR: Low Volatility", tooltip="Python: vol_exit_mult=2.5")
+i_lv_rebalance = input.int(21, "Low-vol rebalance (bars)", minval=1, group="BEAR: Low Volatility")
+
+// ── Core Indicators ───────────────────────────────────────────────────────────
+sma200 = ta.sma(close, i_sma_window)
+above_sma = close > sma200
+
+log_ret = math.log(close / close[1])
+ann_vol_pct = ta.stdev(log_ret, i_regime_vol_window) * math.sqrt(252) * 100.0
+high_vol = ann_vol_pct >= i_high_vol_threshold
+
+// ── Regime Classification ─────────────────────────────────────────────────────
+// BULL   : above SMA AND low vol  (momentum-favourable)
+// BEAR   : below SMA AND high vol (low-vol-favourable)
+// CHOPPY : mixed signals          (mean-reversion-favourable)
+is_bull = above_sma and not high_vol
+is_bear = not above_sma and high_vol
+is_choppy = not is_bull and not is_bear
+
+// ── Strategy 1 Indicators (Momentum — used in BULL) ──────────────────────────
+mom_raw = math.log(close[i_mom_skip] / close[i_mom_skip + i_mom_lookback])
+positive_momentum = mom_raw > 0
+rsi14 = ta.rsi(close, i_rsi14_window)
+rsi14_ok = rsi14 < i_rsi14_max
+atr14 = ta.atr(i_atr_window)
+
+var float mom_peak = na
+var bool mom_in_pos = false
+if mom_in_pos
+    mom_peak := math.max(nz(mom_peak, close), close)
+mom_trailing_stop = nz(mom_peak, close) - i_atr_mult * atr14
+mom_stop_hit = mom_in_pos and close < mom_trailing_stop
+mom_rebalance_bar = bar_index % i_mom_rebalance == 0
+mom_entry = mom_rebalance_bar and is_bull and above_sma and positive_momentum and rsi14_ok and not strategy.position_size > 0
+mom_rebal_exit = mom_rebalance_bar and mom_in_pos and is_bull and (not above_sma or not positive_momentum)
+
+// ── Strategy 2 Indicators (Mean Reversion — used in CHOPPY) ──────────────────
+[bb_mid, bb_upper, bb_lower] = ta.bb(close, i_bb_window, i_bb_mult)
+band_width = bb_upper - bb_lower
+pct_b = band_width > 0 ? (close - bb_lower) / band_width : na
+delta_ = ta.change(close)
+gain_ = math.max(delta_, 0.0)
+loss_ = math.max(-delta_, 0.0)
+avg_gain_ = ta.sma(gain_, 2)
+avg_loss_ = ta.sma(loss_, 2)
+rsi2 = (avg_gain_ == 0 and avg_loss_ == 0) ? na : avg_loss_ == 0 ? 100.0 : 100.0 - 100.0 / (1.0 + avg_gain_ / avg_loss_)
+var int mr_streak = 0
+mr_streak := close < close[1] ? mr_streak[1] + 1 : 0
+fiveday_ret = (close / close[5] - 1.0) * 100.0
+weak_5day = fiveday_ret < i_fiveday_thr
+mr_scan_bar = bar_index % i_mr_scan == 0
+mr_entry = mr_scan_bar and is_choppy and above_sma and not na(pct_b) and pct_b < i_bb_entry_pct_b and not na(rsi2) and rsi2 < i_rsi2_entry and mr_streak >= 1 and weak_5day and not strategy.position_size > 0
+var int mr_entry_bar = na
+var float mr_entry_price = na
+mr_in_pos = strategy.position_size > 0
+if mr_entry and not mr_in_pos
+    mr_entry_bar := bar_index
+    mr_entry_price := close
+mr_bars_held = mr_in_pos ? bar_index - nz(mr_entry_bar, bar_index) : 0
+mr_exit_rsi2 = mr_in_pos and is_choppy and not na(rsi2) and rsi2 > i_rsi2_exit
+mr_exit_bb = mr_in_pos and is_choppy and not na(pct_b) and pct_b > i_bb_exit_pct_b
+mr_exit_time = mr_in_pos and is_choppy and mr_bars_held >= i_time_stop
+mr_exit_stop = mr_in_pos and is_choppy and not na(mr_entry_price) and close < mr_entry_price * (1.0 - i_hard_stop_pct / 100.0)
+
+// ── Strategy 3 Indicators (Low-Vol — used in BEAR) ───────────────────────────
+lv_above_min_vol = ann_vol_pct >= i_min_vol_ann
+lv_below_max_vol = ann_vol_pct <= i_max_vol_ann
+var float lv_entry_vol = na
+lv_rebalance_bar = bar_index % i_lv_rebalance == 0
+lv_entry = lv_rebalance_bar and is_bear and above_sma and lv_above_min_vol and lv_below_max_vol and not strategy.position_size > 0
+lv_vol_spike_exit = strategy.position_size > 0 and is_bear and not na(lv_entry_vol) and ann_vol_pct > lv_entry_vol * i_vol_exit_mult
+lv_trend_exit = strategy.position_size > 0 and is_bear and not above_sma
+lv_rebal_exit = lv_rebalance_bar and strategy.position_size > 0 and is_bear and not lv_vol_spike_exit and not lv_trend_exit and (not lv_above_min_vol or not lv_below_max_vol)
+
+// ── Regime-Change Force Exit ──────────────────────────────────────────────────
+// If regime changes while in a position, force close to switch strategy
+var string last_regime = "choppy"
+regime_changed = (is_bull and last_regime != "bull") or (is_bear and last_regime != "bear") or (is_choppy and last_regime != "choppy")
+force_exit = strategy.position_size > 0 and regime_changed
+
+// ── Execute Orders ────────────────────────────────────────────────────────────
+// BULL regime — Momentum signals
+if mom_entry and is_bull
+    strategy.entry("Long", strategy.long, comment="MOM Entry")
+    mom_in_pos := true
+    mom_peak := close
+
+if (mom_stop_hit or mom_rebal_exit) and is_bull and not force_exit
+    strategy.close("Long", comment=mom_stop_hit ? "MOM Stop" : "MOM Rebal")
+    mom_in_pos := false
+    mom_peak := na
+
+// CHOPPY regime — Mean Reversion signals
+if mr_entry and is_choppy
+    strategy.entry("Long", strategy.long, comment="MR Entry")
+
+if mr_exit_rsi2 and not force_exit
+    strategy.close("Long", comment="MR RSI2 Exit")
+    mr_entry_bar := na
+    mr_entry_price := na
+
+if mr_exit_bb and not mr_exit_rsi2 and not force_exit
+    strategy.close("Long", comment="MR BB Exit")
+    mr_entry_bar := na
+    mr_entry_price := na
+
+if mr_exit_time and not mr_exit_rsi2 and not mr_exit_bb and not force_exit
+    strategy.close("Long", comment="MR Time Stop")
+    mr_entry_bar := na
+    mr_entry_price := na
+
+if mr_exit_stop and not mr_exit_rsi2 and not mr_exit_bb and not mr_exit_time and not force_exit
+    strategy.close("Long", comment="MR Hard Stop")
+    mr_entry_bar := na
+    mr_entry_price := na
+
+// BEAR regime — Low-Vol signals
+if lv_entry and is_bear
+    strategy.entry("Long", strategy.long, comment="LV Entry")
+    lv_entry_vol := ann_vol_pct
+
+if lv_vol_spike_exit and not force_exit
+    strategy.close("Long", comment="LV Vol Spike")
+    lv_entry_vol := na
+
+if lv_trend_exit and not lv_vol_spike_exit and not force_exit
+    strategy.close("Long", comment="LV Trend Exit")
+    lv_entry_vol := na
+
+if lv_rebal_exit and not force_exit
+    strategy.close("Long", comment="LV Rebal Exit")
+    lv_entry_vol := na
+
+// Regime-change forced exit (clean slate before switching strategy)
+if force_exit
+    strategy.close("Long", comment="Regime Switch")
+    mom_in_pos := false
+    mom_peak := na
+    mr_entry_bar := na
+    mr_entry_price := na
+    lv_entry_vol := na
+
+// Update regime tracker
+if is_bull
+    last_regime := "bull"
+else if is_bear
+    last_regime := "bear"
+else
+    last_regime := "choppy"
+
+// ── Plots ─────────────────────────────────────────────────────────────────────
+plot(sma200, "SMA 200", color=color.new(color.blue, 0), linewidth=2)
+plot(is_bull and mom_in_pos ? mom_trailing_stop : na, "Trailing Stop", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=1)
+plot(bb_upper, "BB Upper", color=color.new(color.gray, 70), linewidth=1)
+plot(bb_lower, "BB Lower", color=color.new(color.gray, 70), linewidth=1)
+bgcolor(is_bull ? color.new(color.green, 90) : is_bear ? color.new(color.red, 90) : color.new(color.orange, 90), title="Regime Zone")
+
+// ── Regime Info Table ─────────────────────────────────────────────────────────
+var table info_tbl = table.new(position.top_right, 2, 9, bgcolor=color.new(color.white, 10), border_width=1)
+if barstate.islast
+    table.cell(info_tbl, 0, 0, "Indicator", text_color=color.gray, text_size=size.small)
+    table.cell(info_tbl, 1, 0, "Value", text_color=color.gray, text_size=size.small)
+    table.cell(info_tbl, 0, 1, "REGIME", text_size=size.small)
+    table.cell(info_tbl, 1, 1, is_bull ? "BULL" : is_bear ? "BEAR" : "CHOPPY", text_color=is_bull ? color.green : is_bear ? color.red : color.orange, text_size=size.small)
+    table.cell(info_tbl, 0, 2, "SMA(200)", text_size=size.small)
+    table.cell(info_tbl, 1, 2, str.tostring(math.round(sma200, 2)), text_color=above_sma ? color.green : color.red, text_size=size.small)
+    table.cell(info_tbl, 0, 3, "20d Ann.Vol%", text_size=size.small)
+    table.cell(info_tbl, 1, 3, str.tostring(math.round(ann_vol_pct, 1)) + "%", text_color=high_vol ? color.red : color.green, text_size=size.small)
+    table.cell(info_tbl, 0, 4, "Active Strategy", text_size=size.small)
+    table.cell(info_tbl, 1, 4, is_bull ? "Momentum" : is_bear ? "Low-Vol" : "Mean-Rev", text_size=size.small)
+    table.cell(info_tbl, 0, 5, "Momentum(6m)", text_size=size.small)
+    table.cell(info_tbl, 1, 5, str.tostring(math.round(mom_raw * 100, 2)) + "%", text_color=positive_momentum ? color.green : color.red, text_size=size.small)
+    table.cell(info_tbl, 0, 6, "RSI(14)", text_size=size.small)
+    table.cell(info_tbl, 1, 6, str.tostring(math.round(rsi14, 1)), text_size=size.small)
+    table.cell(info_tbl, 0, 7, "RSI(2)", text_size=size.small)
+    table.cell(info_tbl, 1, 7, not na(rsi2) ? str.tostring(math.round(rsi2, 1)) : "N/A", text_color=not na(rsi2) and rsi2 < i_rsi2_entry ? color.green : color.black, text_size=size.small)
+    table.cell(info_tbl, 0, 8, "In Position", text_size=size.small)
+    table.cell(info_tbl, 1, 8, strategy.position_size > 0 ? "YES" : "NO", text_color=strategy.position_size > 0 ? color.green : color.red, text_size=size.small)
